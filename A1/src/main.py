@@ -19,5 +19,7 @@ if __name__ == '__main__':
         for img in img_arr:
             processed_img = helper.preprocess(img)
             edge_detected_img = helper.canny_edge_detector(processed_img)
-            cv2.imwrite(os.path.join('temp/', img_name_arr[ct]), edge_detected_img)
+            corner_detected_img = helper.harris_corner_detector(edge_detected_img)
+            cv2.imwrite(os.path.join('temp/', 'edge'+img_name_arr[ct]), edge_detected_img)
+            cv2.imwrite(os.path.join('temp/', 'corner'+img_name_arr[ct]), corner_detected_img)
             ct += 1

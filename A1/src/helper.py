@@ -13,15 +13,15 @@ def gaussian_filter_kernel(n):
     return filter_val/np.sum(filter_val)
 
 # Function to apply a filter kernel
-def filter_img(img, kernel):
+def filter_img(img, kernel, mode = 'full'):
     if len(img.shape) == 3:
         filtered_channel = []
         for channel in range(img.shape[2]):
-            filtered_channel.append(scipy.signal.convolve2d(img[:, :, channel], kernel))
+            filtered_channel.append(scipy.signal.convolve2d(img[:, :, channel], kernel, mode = mode))
         filtered_img = np.stack(filtered_channel, axis=-1)
         return filtered_img
     else:
-        return scipy.signal.convolve2d(img, kernel)
+        return scipy.signal.convolve2d(img, kernel, mode = mode)
 
 # Changes the contrast by given value 
 def apply_contrast(img, c):
@@ -108,3 +108,30 @@ def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
 
     return d_threshold_img
 
+
+# Harris Corner Detector
+def harris_corner_detector(img, window_size = 5, k = 0.04, t = 4e10):
+    img = np.copy(img)
+    
+    # Calculates gradient
+    sobel_kernel = sobel_gradient_kernel()
+    I_x = filter_img(img, sobel_kernel[0], mode = 'same')
+    I_y = filter_img(img, sobel_kernel[1], mode = 'same')
+    
+    # Calculating summed matrix
+    gaussian_kernel = gaussian_filter_kernel(window_size)
+    I_x2 = filter_img(I_x**2, gaussian_kernel, mode = 'same')
+    I_y2 = filter_img(I_y**2, gaussian_kernel, mode = 'same')
+    I_xy = filter_img(I_x*I_y, gaussian_kernel, mode = 'same')
+    M = np.stack([np.stack([I_x2, I_xy], axis = -1), np.stack([I_xy, I_y2], axis = -1)], axis = -2)
+    
+    # Calculating score R
+    R = np.linalg.det(M) - k*(np.trace(M, axis1 = -2, axis2 = -1))**2
+    
+    return threshold(R, t)
+
+
+# Connected Component
+def connected_component(img):
+    img = np.copy(img)
+    
