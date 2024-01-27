@@ -1,6 +1,12 @@
 import numpy as np
 import scipy.signal
 
+# Limit image values
+def lim_image(img):
+    img[img<0] = 0
+    img[img>255] = 255
+    return img
+
 # Function to convert image to gray scale image
 def gray_scale(img):
     return 0.299*img[:,:,0] + 0.587*img[:,:,1] + 0.114*img[:,:,2]
@@ -50,7 +56,7 @@ def preprocess(img, smooth_size = 5, contrast = 200):
     # Thresholding
     threshold_img = threshold(high_contrast_img, 50)
     
-    return threshold_img
+    return lim_image(threshold_img)
 
 
 # Calculates sobel kernel
@@ -106,7 +112,7 @@ def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
     # Double threshold
     d_threshold_img = double_threshold(threshold_img, threshold1, threshold2)
 
-    return d_threshold_img
+    return lim_image(d_threshold_img)
 
 
 # Harris Corner Detector
@@ -128,10 +134,101 @@ def harris_corner_detector(img, window_size = 5, k = 0.04, t = 4e10):
     # Calculating score R
     R = np.linalg.det(M) - k*(np.trace(M, axis1 = -2, axis2 = -1))**2
     
-    return threshold(R, t)
+    return lim_image(threshold(R, t))
 
 
-# Connected Component
+# Finding processed neighbor of pixel in binary image
+def neighbor_pixel(img, i, j):
+    neigh = []
+    x, y = img.shape
+    if i > 0 and img[i-1, j] == 1:
+        neigh.append((i-1, j))
+    if j > 0 and img[i, j-1] == 1:
+        neigh.append((i, j-1))
+    if i > 0 and j > 0 and img[i-1, j-1] == 1:
+        neigh.append((i-1, j-1))
+    if i > 0 and j < y-1 and img[i-1, j+1] == 1:
+        neigh.append((i-1, j+1))
+    return neigh
+        
+# Standardize linked elements in union find
+def standardize_find(linked: dict):
+    collected_label = []
+    for elem in linked:
+        union = []
+        for processed_set in collected_label:
+            if len(processed_set.intersection(linked[elem])) != 0:
+                union.append(processed_set)
+        if len(union) != 0:
+            for union_elem in union:
+                collected_label.remove(union_elem)
+                linked[elem] = linked[elem].union(union_elem)
+        collected_label.append(linked[elem])
+                
+    for label in range(len(collected_label)):
+        for elem in collected_label[label]:
+            linked[elem] = label
+
+# Connected Component using two pass algorithm
 def connected_component(img):
     img = np.copy(img)
     
+    # Converting to binary image
+    img = np.round(img/255).astype(int)
+    
+    # Two pass algorithm
+    linked = {0: {0}}
+    labels = np.zeros_like(img)
+    currlabel = 0
+    
+    # First Pass
+    for i in range(img.shape[0]):
+        for j in range(img.shape[1]):
+            if img[i, j] == 1:
+                neighbors = neighbor_pixel(img, i, j)
+                if len(neighbors) == 0:
+                    currlabel += 1
+                    linked[currlabel] = {currlabel}
+                    labels[i, j] = currlabel
+                else:
+                    neighbor_label = set([labels[x, y] for (x, y) in neighbors])
+                    labels[i, j] = min(neighbor_label)
+                    for label_val in neighbor_label:
+                        linked[label_val] = linked[label_val].union(neighbor_label)
+    
+    # Second Pass
+    standardize_find(linked)
+    min_func = np.vectorize(lambda x: linked[x])
+    labels = min_func(labels)
+    
+    return labels
+
+
+# Splits various components of image
+def split_component(img, labels):
+    num_label = np.max(labels)
+    component_arr = []
+    for label in range(1, num_label+1):
+        component = np.zeros_like(img)
+        index = labels == label
+        component[index] = img[index]
+        component_arr.append(component)
+    return lim_image(255*np.array(component_arr))
+
+
+# Counts number of sutures in one component
+def count_suture(component, corner):
+    component = np.copy(component)
+    
+    # Converting to binary image
+    component = np.round(component/255).astype(int)
+    
+    # Corners in component
+    corner_comp = np.zeros_like(corner)
+    index = component == 1
+    corner_comp[index] = corner[index]
+    
+    # Counting number of corners
+    labels = connected_component(corner_comp)
+
+    return np.max(labels)
