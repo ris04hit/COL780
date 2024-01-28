@@ -1,6 +1,10 @@
 import numpy as np
 import scipy.signal
 
+# Convert to binary image
+def binary_img(img):
+    return np.round(img/255).astype(int)
+
 # Limit image values
 def lim_image(img):
     img[img<0] = 0
@@ -174,7 +178,7 @@ def connected_component(img):
     img = np.copy(img)
     
     # Converting to binary image
-    img = np.round(img/255).astype(int)
+    img = binary_img(img)
     
     # Two pass algorithm
     linked = {0: {0}}
@@ -216,12 +220,134 @@ def split_component(img, labels):
     return lim_image(255*np.array(component_arr))
 
 
-# Counts number of sutures in one component
-def count_suture(component, corner):
+# Calculates r for hough transform
+def calc_r(x, y, theta):
+    return (x*np.cos(theta*np.pi/180) + y*np.sin(theta*np.pi/180)).astype(int)
+
+# Calculates angle with x axis of a line perpendicular to suture
+def suture_angle(img, t = 200):
+    # Calculates gradient
+    sobel_kernel = sobel_gradient_kernel()
+    grad_x = filter_img(img, sobel_kernel[0])
+    grad_y = filter_img(img, sobel_kernel[1])
+    grad = np.hypot(grad_x, grad_y)
+    theta = (180*np.arctan2(grad_y, grad_x)/np.pi) % 180    
+    angle_val = np.average(theta, weights=grad)
+
+    return angle_val
+
+# Implements bresenham algorithm
+def bresenham_line(c0, c1):
+    x0, y0 = c0
+    x1, y1 = c1
+    
+    points = []
+
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    steep = dy > dx
+
+    if steep:
+        x0, y0 = y0, x0
+        x1, y1 = y1, x1
+
+    if x0 > x1:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+
+    dx = x1 - x0
+    dy = abs(y1 - y0)
+    error = int(dx / 2)
+    ystep = 1 if y0 < y1 else -1
+    y = y0
+
+    for x in range(x0, x1 + 1):
+        coord = (y, x) if steep else (x, y)
+        points.append(coord)
+        error -= dy
+        if error < 0:
+            y += ystep
+            error += dx
+
+    return np.array(points)
+
+# Hough transforms an image to detect straight lines
+def gradient_hough_transform(img,
+                             num_theta = 60,
+                             grad_precision = 2,
+                             point_threshold = 0.3,
+                             interpolate = 0,
+                             suture_filter = 0,
+                             suture_threshold = 25):
+    img = np.copy(img)
+
+    # Converting to binary image
+    img = binary_img(img)
+    
+    # Calculates gradient
+    del_theta = 180/num_theta
+    sobel_kernel = sobel_gradient_kernel()
+    grad_x = filter_img(img, sobel_kernel[0])
+    grad_y = filter_img(img, sobel_kernel[1])
+    grad = np.hypot(grad_x, grad_y)
+    theta = ((num_theta*np.arctan2(grad_y, grad_x)/np.pi) % num_theta).astype(int)
+    s_angle = suture_angle(img)
+    
+    # Creating accumulator
+    r_max = np.hypot(img.shape[0], img.shape[1]).astype(int)
+    accumulator = np.zeros((r_max, num_theta))
+    line_param = [[[] for i in range(num_theta)] for j in range(r_max)]
+    
+    # Filling accumulator for each pixel
+    for y,x in np.argwhere(img == 1):
+        for theta_ind in range(theta[y, x] - grad_precision, theta[y, x] + grad_precision):
+            theta_val = theta_ind * del_theta
+            if suture_filter:
+                diff_theta = (theta_val - s_angle)%180
+                diff_theta = min(diff_theta, 180-diff_theta)
+                if diff_theta > suture_threshold:
+                    continue
+            coord0 = calc_r(x, y, theta_val)
+            coord1 = theta_ind%num_theta
+            accumulator[coord0, coord1] += 1
+            line_param[coord0][coord1].append((x,y))
+    
+    # Thresholding accumulator
+    effective_threshold = max(1, point_threshold*(np.max(accumulator)-30))
+    effective_threshold = max(1, point_threshold*np.max(accumulator))
+    line_coord = [line_param[r][t] for r, t in np.argwhere(accumulator >= effective_threshold)]
+    
+    # Creating line image
+    line_img = np.zeros_like(img)
+    for line in line_coord:
+        if interpolate:
+            c0, c1 = min(line), max(line)
+            new_line = bresenham_line(c0, c1)
+        else:
+            new_line = line
+        for x, y in new_line:
+            line_img[y, x] = 1
+    return 255*line_img
+
+
+# Merge kernel
+def merge_kernel(size):
+    return np.ones((size, size))
+
+# Merge line image (Only for binary image)
+def merge_line_image(img, size = 1):
+    img = np.copy(img)
+    kernel = merge_kernel(size)
+    merged_img = filter_img(img, kernel)
+    return lim_image(merged_img)
+
+
+# Counts number of sutures in one component using corner count
+def count_suture_corner(component, corner):
     component = np.copy(component)
     
     # Converting to binary image
-    component = np.round(component/255).astype(int)
+    component = binary_img(component)
     
     # Corners in component
     corner_comp = np.zeros_like(corner)
