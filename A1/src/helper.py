@@ -1,5 +1,17 @@
 import numpy as np
-import scipy.signal
+
+# Function to perform 2d convolution on image
+def convolve2d(img, kernel):
+    ker_y, ker_x = kernel.shape
+    img_y, img_x = img.shape
+    row_y_left, col_x_left = (ker_y-1)//2, (ker_x-1)//2
+    row_y_right, col_x_right = ker_y - 1 - row_y_left, ker_x - 1- row_y_left
+    convolved_img = np.zeros((img_y + ker_y - 1, img_x + ker_x - 1))
+    for i in range(ker_y):
+        for j in range(ker_x):
+            convolved_img[i:i+img_y, j:j+img_x] += kernel[i, j]*img
+    convolved_img = convolved_img[row_y_left:-row_y_right, col_x_left:-col_x_right]
+    return convolved_img
 
 # Convert to binary image
 def binary_img(img):
@@ -23,15 +35,15 @@ def gaussian_filter_kernel(n):
     return filter_val/np.sum(filter_val)
 
 # Function to apply a filter kernel
-def filter_img(img, kernel, mode = 'full'):
+def filter_img(img, kernel):
     if len(img.shape) == 3:
         filtered_channel = []
         for channel in range(img.shape[2]):
-            filtered_channel.append(scipy.signal.convolve2d(img[:, :, channel], kernel, mode = mode))
+            filtered_channel.append(convolve2d(img[:, :, channel], kernel))
         filtered_img = np.stack(filtered_channel, axis=-1)
         return filtered_img
     else:
-        return scipy.signal.convolve2d(img, kernel, mode = mode)
+        return convolve2d(img, kernel)
 
 # Changes the contrast by given value 
 def apply_contrast(img, c):
@@ -98,16 +110,22 @@ def double_threshold(img, t1, t2):
     img[img > t2] = 255
     return img
 
-# Canny Edge Detector
-def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
+# Calculates gradient
+def calc_grad(img):
     img = np.copy(img)
-    
-    # Calculates gradient
     sobel_kernel = sobel_gradient_kernel()
     grad_x = filter_img(img, sobel_kernel[0])
     grad_y = filter_img(img, sobel_kernel[1])
     grad = np.hypot(grad_x, grad_y)
     theta = 180*np.arctan2(grad_y, grad_x)/np.pi
+    return grad_x, grad_y, grad, theta
+
+# Canny Edge Detector
+def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
+    img = np.copy(img)
+    
+    # Calculates gradient
+    grad_x, grad_y, grad, theta = calc_grad(img)
     
     # Gradient thresholding
     threshold_img = grad_threshold(grad, theta)
@@ -120,19 +138,17 @@ def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
 
 
 # Harris Corner Detector
-def harris_corner_detector(img, window_size = 5, k = 0.04, t = 4e10):
+def harris_corner_detector(img, grad_x, grad_y, window_size = 5, k = 0.04, t = 4e10):
     img = np.copy(img)
     
     # Calculates gradient
-    sobel_kernel = sobel_gradient_kernel()
-    I_x = filter_img(img, sobel_kernel[0], mode = 'same')
-    I_y = filter_img(img, sobel_kernel[1], mode = 'same')
+    I_x, I_y = grad_x, grad_y
     
     # Calculating summed matrix
     gaussian_kernel = gaussian_filter_kernel(window_size)
-    I_x2 = filter_img(I_x**2, gaussian_kernel, mode = 'same')
-    I_y2 = filter_img(I_y**2, gaussian_kernel, mode = 'same')
-    I_xy = filter_img(I_x*I_y, gaussian_kernel, mode = 'same')
+    I_x2 = filter_img(I_x**2, gaussian_kernel)
+    I_y2 = filter_img(I_y**2, gaussian_kernel)
+    I_xy = filter_img(I_x*I_y, gaussian_kernel)
     M = np.stack([np.stack([I_x2, I_xy], axis = -1), np.stack([I_xy, I_y2], axis = -1)], axis = -2)
     
     # Calculating score R
@@ -224,16 +240,20 @@ def split_component(img, labels):
 def calc_r(x, y, theta):
     return (x*np.cos(theta*np.pi/180) + y*np.sin(theta*np.pi/180)).astype(int)
 
-# Calculates angle with x axis of a line perpendicular to suture
-def suture_angle(img, t = 200):
-    # Calculates gradient
-    sobel_kernel = sobel_gradient_kernel()
-    grad_x = filter_img(img, sobel_kernel[0])
-    grad_y = filter_img(img, sobel_kernel[1])
-    grad = np.hypot(grad_x, grad_y)
-    theta = (180*np.arctan2(grad_y, grad_x)/np.pi) % 180    
-    angle_val = np.average(theta, weights=grad)
+# Calculate angles of each component
+def component_angle(components, grad, theta):
+    theta = np.copy(theta)
+    theta %= 180
+    weights = components*grad
+    angle_arr = [np.average(theta, weights=weights[i, :, :]) for i in range(components.shape[0])]
+    angle_arr = np.array(angle_arr) - 90
+    return angle_arr
 
+# Calculates angle with x axis of a line perpendicular to suture
+def suture_angle(grad, theta):
+    theta = np.copy(theta)
+    theta %= 180
+    angle_val = np.average(theta, weights=grad)
     return angle_val
 
 # Implements bresenham algorithm
@@ -272,7 +292,7 @@ def bresenham_line(c0, c1):
     return np.array(points)
 
 # Hough transforms an image to detect straight lines
-def gradient_hough_transform(img,
+def gradient_hough_transform(img, s_angle, grad_x, grad_y,
                              num_theta = 60,
                              grad_precision = 2,
                              point_threshold = 0.3,
@@ -284,14 +304,9 @@ def gradient_hough_transform(img,
     # Converting to binary image
     img = binary_img(img)
     
-    # Calculates gradient
+    # Calculates theta
     del_theta = 180/num_theta
-    sobel_kernel = sobel_gradient_kernel()
-    grad_x = filter_img(img, sobel_kernel[0])
-    grad_y = filter_img(img, sobel_kernel[1])
-    grad = np.hypot(grad_x, grad_y)
     theta = ((num_theta*np.arctan2(grad_y, grad_x)/np.pi) % num_theta).astype(int)
-    s_angle = suture_angle(img)
     
     # Creating accumulator
     r_max = np.hypot(img.shape[0], img.shape[1]).astype(int)
@@ -392,7 +407,6 @@ def spacing_centroid(centroids, grad_theta):
     distance *= np.cos(diff_angle - theta)
     return np.abs(distance)
 
-
 # Filters components based on centroid spacing
 def filter_centroid(components, centroids, grad_theta, mul_threshold = 2):
     components = np.copy(components)
@@ -401,7 +415,6 @@ def filter_centroid(components, centroids, grad_theta, mul_threshold = 2):
     num_comp = components.shape[0]
     distance = spacing_centroid(centroids, grad_theta)    
     mean_dist = np.mean(distance)
-    std_dist = np.std(distance)
     
     # Allowable distance
     min_dist = mean_dist/mul_threshold
