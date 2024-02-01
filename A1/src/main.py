@@ -7,39 +7,64 @@ import helper
 
 if __name__ == '__main__':
     part_id = sys.argv[1]
-    img_dir = sys.argv[2]
+    img_dir = sys.argv[2]       # Or input csv file for part2
     output_csv = sys.argv[3]
     
-    # Part 1
+    # Part based image input
     if part_id == '1':
         img_name_arr = os.listdir(img_dir)
         img_name_arr.sort()
         img_arr = [cv2.imread(os.path.join(img_dir, img_name)) for img_name in img_name_arr]
-        
-        csv_data = []
+    elif part_id == '2':
+        inp_df = pd.read_csv(img_dir)
+        img_name_arr = inp_df['img1_path'].to_list()
+        img_name_arr.extend(inp_df['img2_path'].to_list())
+        img_name_arr = list(set(img_name_arr))
+        img_arr = [cv2.imread(img_path) for img_path in img_name_arr]
+        output_data = {}
 
-        ct = 0
-        for img in img_arr:
-            processed_img = helper.preprocess(img)
-            edge_detected_img = helper.canny_edge_detector(processed_img)[10:-10, 10:-10]
-            
-            grad_x, grad_y, grad, theta = helper.calc_grad(edge_detected_img)
-            
-            angle = helper.suture_angle(grad, theta)
-            line_detected_img = helper.gradient_hough_transform(edge_detected_img, angle, grad_x, grad_y, interpolate=1, suture_filter=1)
-            
-            labels = helper.connected_component(line_detected_img)
-            image_components = helper.split_component(line_detected_img, labels)
-            
-            for mul_threshold in [3, 2.5, 2]:
-                centroids = helper.centroid(line_detected_img, image_components)
-                image_components = helper.filter_centroid(image_components, centroids, angle, mul_threshold=mul_threshold)
-                
+    csv_data = []
+        
+    ct = 0
+    for img in img_arr:
+        # Preprocessing image by gray scaling, gaussian smoothening, increasing contrast and thresholding
+        # Cropping not done since images were of small size and it will only affect runtime performance
+        processed_img = helper.preprocess(img)
+        
+        # Edges detected using canny edge detector
+        edge_detected_img = helper.canny_edge_detector(processed_img)[10:-10, 10:-10]
+        
+        # Calculated gradient and related parameterss for edge detected image
+        grad_x, grad_y, grad, theta = helper.calc_grad(edge_detected_img)
+        
+        # Calculated approximate mean angle of normal to all sutures
+        angle = helper.suture_angle(grad, theta)
+        
+        # Detected lines using hough transform with gradient heurestic
+        # Interpolated lines between points found on same line
+        # Performed filter based on mean angle calculated earlier
+        line_detected_img = helper.gradient_hough_transform(edge_detected_img, angle, grad_x, grad_y, interpolate=1, suture_filter=1)
+        
+        # Used two pass algorithm to find different connected components of image after hough transform
+        labels = helper.connected_component(line_detected_img)
+        image_components = helper.split_component(line_detected_img, labels)
+        
+        # Combined different components very close to each other
+        # Repeated the step multiple time by varying threshold parameter for closeness
+        for mul_threshold in [3, 2.5, 2]:
             centroids = helper.centroid(line_detected_img, image_components)
-            
-            inter_suture_spacing = helper.spacing_centroid(centroids, angle)/img.shape[0]
-            suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, theta)
-            
+            image_components = helper.filter_centroid(image_components, centroids, angle, mul_threshold=mul_threshold)
+        
+        # Calculated centroids of all components
+        centroids = helper.centroid(line_detected_img, image_components)
+        
+        # Calculating various stastical results based on problem statement
+        # For angle calculation used only the pixels present in edge detected image
+        inter_suture_spacing = helper.spacing_centroid(centroids, angle)/img.shape[0]
+        suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, theta)
+        
+        # Preparing output data based on parts
+        if part_id == '1':
             csv_data.append({
                 'image_name': img_name_arr[ct],
                 'number of sutures': centroids.shape[0],
@@ -48,13 +73,25 @@ if __name__ == '__main__':
                 'mean suture angle wrt x-axis': np.mean(suture_angles),
                 'variance of suture angle wrt x-axis': np.var(suture_angles)
             })
-            
-            print(f'Processed {img_name_arr[ct]}')
-            ct += 1
+        if part_id == '2':
+            output_data[img_name_arr[ct]] = (np.var(inter_suture_spacing), np.var(suture_angles))
         
-        df = pd.DataFrame(csv_data)
-        df.to_csv(output_csv, index=False)
-        
-    # Part 2
+        # Log
+        print(f'Processed {img_name_arr[ct]}')
+        ct += 1
+    
+    # Part based output
     if part_id == '2':
-        pass
+        for ind, row in inp_df.iterrows():
+            img1_path = row['img1_path']
+            img2_path = row['img2_path']
+            img1_stat = output_data[img1_path]
+            img2_stat = output_data[img2_path]
+            csv_data.append({
+                'img1_path': img1_path,
+                'img2_path': img2_path,
+                'output_distance': 1 if img1_stat[0] < img2_stat[0] else 2,
+                'output_angle': 1 if img1_stat[1] < img2_stat[1] else 2
+            })
+    df = pd.DataFrame(csv_data)
+    df.to_csv(output_csv, index=False)
