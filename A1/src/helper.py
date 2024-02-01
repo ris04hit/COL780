@@ -358,3 +358,72 @@ def count_suture_corner(component, corner):
     labels = connected_component(corner_comp)
 
     return np.max(labels)
+
+
+# Calculates centroid of each component
+def centroid(img, line_components):
+    # Converting to binary
+    img = binary_img(np.copy(img))
+    line_components = binary_img(np.copy(line_components))
+    
+    # Combining img with line components
+    components = img & line_components
+    
+    # Finding centroids
+    indices = np.argwhere(components == 1)
+    centroid_arr = [np.mean(indices[indices[:, 0] == i], axis = 0) for i in range(components.shape[0])]
+    return np.array(centroid_arr)[:, 1:].astype(int)
+
+# Inserts centroids into image
+def insert_centroid(img, centroids):
+    centroid_detected_img = np.copy(img)/3
+    for y, x in centroids:
+        for indx in (x-1, x, x+1):
+            for indy in (y-1, y, y+1):
+                centroid_detected_img[indy, indx] = 255
+    return centroid_detected_img
+
+# Calculates spacing between centroids
+def spacing_centroid(centroids, grad_theta):
+    diff = np.diff(centroids, axis=0)
+    distance = np.sqrt(np.sum(diff**2, axis=1))
+    diff_angle = np.arctan2(diff[:, 0], diff[:, 1])
+    theta = grad_theta/180 * np.pi
+    distance *= np.cos(diff_angle - theta)
+    return np.abs(distance)
+
+
+# Filters components based on centroid spacing
+def filter_centroid(components, centroids, grad_theta, mul_threshold = 2):
+    components = np.copy(components)
+    
+    # Distance between adjacent centroid
+    num_comp = components.shape[0]
+    distance = spacing_centroid(centroids, grad_theta)    
+    mean_dist = np.mean(distance)
+    std_dist = np.std(distance)
+    
+    # Allowable distance
+    min_dist = mean_dist/mul_threshold
+    
+    # Filtering centroids
+    same_comp = {i:i for i in range(num_comp)}
+    for i in range(distance.shape[0]):
+        if distance[i] < min_dist:
+            same_comp[i] = i+1
+            
+    # Merging components
+    visited = [False for i in range(num_comp)]
+    comp_arr = []
+    for i in range(num_comp):
+        if visited[i]:
+            continue
+        visited[i] = True
+        img = components[i]
+        while i != same_comp[i]:
+            i = same_comp[i]
+            visited[i] = True
+            img += components[i]
+        comp_arr.append(img)
+    
+    return np.array(comp_arr)
