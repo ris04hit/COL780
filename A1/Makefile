@@ -14,3 +14,6 @@ score2: part2
 	python3 src/score.py 2 input/COL780_A1.csv output/COL780_A1.csv
 
 score: score1 score2
+
+clean:
+	rm temp/*/*.png output/*

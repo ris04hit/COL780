@@ -5,12 +5,11 @@ def convolve2d(img, kernel):
     ker_y, ker_x = kernel.shape
     img_y, img_x = img.shape
     row_y_left, col_x_left = (ker_y-1)//2, (ker_x-1)//2
-    row_y_right, col_x_right = ker_y - 1 - row_y_left, ker_x - 1- row_y_left
     convolved_img = np.zeros((img_y + ker_y - 1, img_x + ker_x - 1))
     for i in range(ker_y):
         for j in range(ker_x):
             convolved_img[i:i+img_y, j:j+img_x] += kernel[i, j]*img
-    convolved_img = convolved_img[row_y_left:-row_y_right, col_x_left:-col_x_right]
+    convolved_img = convolved_img[row_y_left:row_y_left+img_y, col_x_left:col_x_left+img_x]
     return convolved_img
 
 # Convert to binary image
@@ -72,7 +71,7 @@ def preprocess(img, smooth_size = 5, contrast = 200):
     # Thresholding
     threshold_img = threshold(high_contrast_img, 50)
     
-    return lim_image(threshold_img)
+    return threshold_img
 
 
 # Calculates sobel kernel
@@ -129,7 +128,8 @@ def canny_edge_detector(img, threshold1 = 50, threshold2 = 200):
     
     # Gradient thresholding
     threshold_img = grad_threshold(grad, theta)
-    threshold_img = 255*threshold_img/np.max(threshold_img)
+    if np.max(threshold_img) != 0:
+        threshold_img = 255*threshold_img/np.max(threshold_img)
     
     # Double threshold
     d_threshold_img = double_threshold(threshold_img, threshold1, threshold2)
@@ -227,6 +227,8 @@ def connected_component(img):
 # Splits various components of image
 def split_component(img, labels):
     num_label = np.max(labels)
+    if num_label == 0:
+        return img.reshape((-1, img.shape[0], img.shape[1]))
     component_arr = []
     for label in range(1, num_label+1):
         component = np.zeros_like(img)
@@ -245,7 +247,12 @@ def component_angle(components, grad, theta):
     theta = np.copy(theta)
     theta %= 180
     weights = components*grad
-    angle_arr = [np.average(theta, weights=weights[i, :, :]) for i in range(components.shape[0])]
+    angle_arr = []
+    for i in range(components.shape[0]):
+        if np.sum(weights[i, :, :]) == 0:
+            angle_arr.append(np.mean(theta))
+        else:
+            angle_arr.append(np.average(theta, weights=weights[i, :, :]))
     angle_arr = np.array(angle_arr) - 90
     return angle_arr
 
@@ -253,7 +260,10 @@ def component_angle(components, grad, theta):
 def suture_angle(grad, theta):
     theta = np.copy(theta)
     theta %= 180
-    angle_val = np.average(theta, weights=grad)
+    if np.sum(grad) == 0:
+        angle_val = np.mean(theta)
+    else:
+        angle_val = np.average(theta, weights=grad)
     return angle_val
 
 # Implements bresenham algorithm
@@ -293,12 +303,12 @@ def bresenham_line(c0, c1):
 
 # Hough transforms an image to detect straight lines
 def gradient_hough_transform(img, s_angle, grad_x, grad_y,
-                             num_theta = 60,
-                             grad_precision = 2,
+                             num_theta = 90,
+                             grad_precision = 3,
                              point_threshold = 0.3,
                              interpolate = 0,
                              suture_filter = 0,
-                             suture_threshold = 25):
+                             suture_threshold = 20):
     img = np.copy(img)
 
     # Converting to binary image
@@ -328,7 +338,6 @@ def gradient_hough_transform(img, s_angle, grad_x, grad_y,
             line_param[coord0][coord1].append((x,y))
     
     # Thresholding accumulator
-    effective_threshold = max(1, point_threshold*(np.max(accumulator)-30))
     effective_threshold = max(1, point_threshold*np.max(accumulator))
     line_coord = [line_param[r][t] for r, t in np.argwhere(accumulator >= effective_threshold)]
     
@@ -350,7 +359,7 @@ def thick_kernel(size):
     return np.ones((size, size))
 
 # Thickens image (Only for binary image)
-def thick_image(img, size = 3):
+def thick_image(img, size = 2):
     img = np.copy(img)
     kernel = thick_kernel(size)
     merged_img = filter_img(binary_img(img), kernel)
@@ -386,7 +395,12 @@ def centroid(img, line_components):
     
     # Finding centroids
     indices = np.argwhere(components == 1)
+
+    if not indices.shape:
+        return np.array([])
+ 
     centroid_arr = [np.mean(indices[indices[:, 0] == i], axis = 0) for i in range(components.shape[0])]
+
     return np.array(centroid_arr)[:, 1:].astype(int)
 
 # Inserts centroids into image
@@ -395,11 +409,14 @@ def insert_centroid(img, centroids):
     for y, x in centroids:
         for indx in (x-1, x, x+1):
             for indy in (y-1, y, y+1):
-                centroid_detected_img[indy, indx] = 255
+                if 0 <= indx < centroid_detected_img.shape[1] and 0 <= indy < centroid_detected_img.shape[0]:
+                    centroid_detected_img[indy, indx] = 255
     return centroid_detected_img
 
 # Calculates spacing between centroids
 def spacing_centroid(centroids, grad_theta, euclidean_only = False):
+    if not centroids.shape:
+        return np.array([])
     diff = np.diff(centroids, axis=0)
     distance = np.sqrt(np.sum(diff**2, axis=1))
     if not euclidean_only:
@@ -411,6 +428,8 @@ def spacing_centroid(centroids, grad_theta, euclidean_only = False):
 # Filters components based on centroid spacing
 def filter_centroid(components, centroids, grad_theta, mul_threshold = 2):
     components = np.copy(components)
+    if not centroids.shape:
+        return components
     
     # Distance between adjacent centroid
     num_comp = components.shape[0]
