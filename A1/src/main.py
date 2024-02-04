@@ -9,6 +9,7 @@ if __name__ == '__main__':
     part_id = sys.argv[1]
     img_dir = sys.argv[2]       # Or input csv file for part2
     output_csv = sys.argv[3]
+    save = True
     
     # Part based image input
     if part_id == '1':
@@ -48,19 +49,32 @@ if __name__ == '__main__':
         # Used two pass algorithm to find different connected components of image after hough transform
         labels = helper.connected_component(line_detected_img)
         image_components = helper.split_component(line_detected_img, labels)
-        
+            
         # Combined different components very close to each other
         # Repeated the step multiple time by varying threshold parameter for closeness
         for mul_threshold in [3, 2.5, 2]:
             centroids = helper.centroid(line_detected_img, image_components)
             image_components = helper.filter_centroid(image_components, centroids, angle, mul_threshold=mul_threshold)
         
+        # Saving images
+        if save:
+            centroid_detected_img = helper.insert_centroid(img, centroids)
+            cv2.imwrite(os.path.join('temp/processed/', img_name_arr[ct]), processed_img)
+            cv2.imwrite(os.path.join('temp/edge/', img_name_arr[ct]), edge_detected_img)
+            cv2.imwrite(os.path.join('temp/gradx/', img_name_arr[ct]), 255*grad_x/np.max(grad_x))
+            cv2.imwrite(os.path.join('temp/grady/', img_name_arr[ct]), 255*grad_y/np.max(grad_y))
+            cv2.imwrite(os.path.join('temp/line/', img_name_arr[ct]), line_detected_img)
+            cv2.imwrite(os.path.join('temp/centroid/', img_name_arr[ct]), centroid_detected_img)
+        
         # Calculated centroids of all components
         centroids = helper.centroid(line_detected_img, image_components)
         
         # Calculating various stastical results based on problem statement
         # For angle calculation used only the pixels present in edge detected image
-        inter_suture_spacing = helper.spacing_centroid(centroids, angle)/img.shape[0]
+        if part_id == '1':
+            inter_suture_spacing = helper.spacing_centroid(centroids, angle, euclidean_only=True)/img.shape[0]
+        if part_id == '2':
+            inter_suture_spacing = helper.spacing_centroid(centroids, angle)/img.shape[0]
         suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, theta)
         
         # Preparing output data based on parts
@@ -74,7 +88,7 @@ if __name__ == '__main__':
                 'variance of suture angle wrt x-axis': np.var(suture_angles)
             })
         if part_id == '2':
-            output_data[img_name_arr[ct]] = (np.var(inter_suture_spacing), np.var(suture_angles))
+            output_data[img_name_arr[ct]] = (np.std(inter_suture_spacing)/np.mean(inter_suture_spacing), np.var(suture_angles))
         
         # Log
         print(f'Processed {img_name_arr[ct]}')

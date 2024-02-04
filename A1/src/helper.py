@@ -346,15 +346,15 @@ def gradient_hough_transform(img, s_angle, grad_x, grad_y,
 
 
 # Merge kernel
-def merge_kernel(size):
+def thick_kernel(size):
     return np.ones((size, size))
 
-# Merge line image (Only for binary image)
-def merge_line_image(img, size = 1):
+# Thickens image (Only for binary image)
+def thick_image(img, size = 3):
     img = np.copy(img)
-    kernel = merge_kernel(size)
-    merged_img = filter_img(img, kernel)
-    return lim_image(merged_img)
+    kernel = thick_kernel(size)
+    merged_img = filter_img(binary_img(img), kernel)
+    return lim_image(255*merged_img)
 
 
 # Counts number of sutures in one component using corner count
@@ -399,12 +399,13 @@ def insert_centroid(img, centroids):
     return centroid_detected_img
 
 # Calculates spacing between centroids
-def spacing_centroid(centroids, grad_theta):
+def spacing_centroid(centroids, grad_theta, euclidean_only = False):
     diff = np.diff(centroids, axis=0)
     distance = np.sqrt(np.sum(diff**2, axis=1))
-    diff_angle = np.arctan2(diff[:, 0], diff[:, 1])
-    theta = grad_theta/180 * np.pi
-    distance *= np.cos(diff_angle - theta)
+    if not euclidean_only:
+        diff_angle = np.arctan2(diff[:, 0], diff[:, 1])
+        theta = grad_theta/180 * np.pi
+        distance *= np.cos(diff_angle - theta)
     return np.abs(distance)
 
 # Filters components based on centroid spacing
