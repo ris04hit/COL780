@@ -1,5 +1,7 @@
+data = data/
+
 part1:
-	python3 src/main.py 1 data/ output/part1.csv
+	python3 src/main.py 1 $(data) output/part1.csv
 
 part2:
 	python3 src/main.py 2 input/COL780_A1.csv output/COL780_A1.csv

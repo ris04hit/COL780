@@ -9,7 +9,7 @@ if __name__ == '__main__':
     part_id = sys.argv[1]
     img_dir = sys.argv[2]       # Or input csv file for part2
     output_csv = sys.argv[3]
-    save = True
+    save = False
     
     # Part based image input
     if part_id == '1':
@@ -32,16 +32,15 @@ if __name__ == '__main__':
         thickness = 1
         grad_precision = 3
         
-        for cycle in range(2):      # Loop to fix number of cycles
+        for cycle in range(2):      # First iteration is dry run for setting the thickness value
             # Preprocessing image by gray scaling, gaussian smoothening, increasing contrast and thresholding
-            # Cropping not done since images were of small size and it will only affect runtime performance
             processed_img = helper.preprocess(img)
             
             # Edges detected using canny edge detector
-            edge_detected_img = helper.canny_edge_detector(processed_img)[10:-10, 10:-10]
+            edge_detected_img = helper.canny_edge_detector(processed_img)
             
             # Thickens binary image for avoiding ignoring of thin edges
-            edge_detected_img = helper.thick_image(edge_detected_img, size=thickness)
+            edge_detected_img = helper.thick_image(helper.crop_image(edge_detected_img), size=thickness)
             
             # Calculated gradient and related parameterss for edge detected image
             grad_x, grad_y, grad, theta = helper.calc_grad(edge_detected_img)
@@ -72,9 +71,11 @@ if __name__ == '__main__':
             # For angle calculation used only the pixels present in edge detected image
             if part_id == '1':
                 inter_suture_spacing = helper.spacing_centroid(centroids, angle, euclidean_only=True)/img.shape[0]
+                suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, theta)
             if part_id == '2':
-                inter_suture_spacing = helper.spacing_centroid(centroids, angle)/img.shape[0]
-            suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, theta)
+                inter_suture_spacing = helper.spacing_centroid(centroids, angle)/edge_detected_img.shape[0]
+                normalized_theta = 180*np.arctan2(grad_y/np.mean(inter_suture_spacing), grad_x)/np.pi
+                suture_angles = helper.component_angle(image_components*helper.binary_img(edge_detected_img), grad, normalized_theta)
         
             # Setting value of thickness
             mean_spacing = np.mean(helper.spacing_centroid(centroids, angle))

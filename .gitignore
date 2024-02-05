@@ -1,7 +1,9 @@
 *__pycache__
 .vscode
+*.zip
 
 # A1
 A1/temp
 A1/_plan.txt
 A1/public_data
+A1/val_data

@@ -56,6 +56,16 @@ def apply_contrast(img, c):
 def threshold(img, t):
     return 255*(img > t)
 
+# Crops image
+def crop_image(img, offset = 10):
+    img = np.copy(img)[offset:-offset, offset:-offset]
+    indices = np.argwhere(binary_img(img) == 1)
+    min_y = max(np.min(indices[:, 0]) - offset, 0)
+    max_y = min(np.max(indices[:, 0]) + offset, img.shape[0]-1)
+    min_x = max(np.min(indices[:, 1]) - offset, 0)
+    max_x = min(np.max(indices[:, 1]) + offset, img.shape[1]-1)
+    return img[min_y:max_y, min_x:max_x]
+
 # Preprocessed image
 def preprocess(img, smooth_size = 5, contrast = 200):
     # Gray scale
