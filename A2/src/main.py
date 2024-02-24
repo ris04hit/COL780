@@ -3,8 +3,20 @@ import sys
 import os
 import numpy as np
 import helper
+import time
+
+def save(out_path, img_arr, inp_path):
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
+    dir = os.path.join(out_path, inp_path.split("/")[-1].split(".")[0])
+    if not os.path.exists(dir):
+        os.mkdir(dir)
+    for i in range(img_arr.shape[0]):
+        cv2.imwrite(os.path.join(dir, f"{i}.png"), img_arr[i])
 
 if __name__ == "__main__":
+    start_time = time.time()
+    
     # Taking Input
     if sys.argv[1] == '1':
         img_dir = sys.argv[2]
@@ -20,8 +32,35 @@ if __name__ == "__main__":
         img_arr = img_arr[:-1]
         
     pan_path = sys.argv[3]
-    img_arr = np.array(img_arr)
+    img_arr = np.array(img_arr).astype(int)
+    read_time = time.time()
     
-    pan_img = np.concatenate(img_arr, axis=1)
+    # Flag to toggle saving of intermediate images
+    save_bool = True
+    
+    # Preprocessing of image
+    preprocessed_img_arr = helper.preprocess(img_arr)
+    preprocess_time = time.time()
+    
+    # Feature detection
+    feature_detected_img_arr, keypoint_arr = helper.feature_detector(preprocessed_img_arr, mode = 'l', save=save_bool)
+    feature_time = time.time()
+    
+    # Saving intermediate images
+    if save_bool:
+        save('temp/preprocess', preprocessed_img_arr, pan_path)
+        save('temp/feature', feature_detected_img_arr, pan_path)
+    
+    print(img_arr.shape)
+    pan_img = img_arr[np.random.randint(0, img_arr.shape[0])]
+    end_time = time.time()
+    
+    # Saving Final Panorama
     cv2.imwrite(pan_path, pan_img)
+    print(f"Processed {pan_path}")
+    print(f"Total Time Taken:\t\t\t{end_time - start_time}")
+    print(f"Input Time Taken:\t\t\t{read_time - start_time}")
+    print(f"Preprocess Time Taken:\t\t\t{preprocess_time - read_time}")
+    print(f"Feature Detection Time Taken:\t\t{feature_time - preprocess_time}")
+    print(f"Saving Time Taken:\t\t\t{end_time - feature_time}")
     

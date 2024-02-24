@@ -17,6 +17,7 @@ fi
 # Iterate through each file in the directory and pass it to main.py
 for video in "$directory_path"/*; do
     if [ -f "$video" ]; then
-        python3 src/main.py 2 "$video" output/"${video%.*}.png" 
+        video_name=$(basename "$video")
+        python3 src/main.py 2 "$video" output/"${video_name%.*}.png" 
     fi
 done
