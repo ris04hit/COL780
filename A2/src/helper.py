@@ -75,11 +75,12 @@ def convolve2d(img, kernel, complete = False):
 # Function to perform another function with array of images
 def apply_arr(img_arr, func, *args, np_conv = True, dynamic = False):
     if dynamic:
-        args = [[args[j][i] for j in range(len(args))] for i in range(img_arr.shape[0])]
+        size = len(img_arr) if type(img_arr) != np.ndarray else img_arr.shape[0]
+        args = [[args[j][i] for j in range(len(args))] for i in range(size)]
         if np_conv:
-            return np.array([func(img_arr[i], *(args[i])) for i in range(img_arr.shape[0])])
+            return np.array([func(img_arr[i], *(args[i])) for i in range(size)])
         else:
-            return [func(img_arr[i], *(args[i])) for i in range(img_arr.shape[0])]
+            return [func(img_arr[i], *(args[i])) for i in range(size)]
     else:
         if np_conv:
             return np.array([func(img, *args) for img in img_arr])
@@ -214,11 +215,12 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e6, edge_t = 10
 
 
 # Insert Keypoint into img
-def insert_keypoint(img, keypoint, thickness = 11):
+def insert_keypoint(img, keypoint, thickness = 11, log = True):
     keypoint = np.copy(keypoint)
     img = np.copy(img)
     
-    print(img.shape, np.count_nonzero(keypoint))
+    if log:
+        print(img.shape, np.count_nonzero(keypoint))
     
     # Thickening Keypoint
     ker_size = (thickness+1)//2
@@ -230,7 +232,7 @@ def insert_keypoint(img, keypoint, thickness = 11):
     return img
 
 # Feature detection
-def feature_detector(img_arr, mode, low_resolution = 2, save = False):
+def feature_detector(img_arr, mode, low_resolution = 1, save = False):
     '''
     mode = 'h': Harris Corner Detector
     mode = 'l': Laplace Harris
@@ -309,7 +311,7 @@ def feature_descriptor(img_arr, keypoint_arr, mode):
 
 
 # Finding corresponding descriptor in img
-def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.7):
+def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.8):
     '''
     ret = 0: returns Index
     ret = 1: returns Descriptor
@@ -425,3 +427,85 @@ def create_match_img(img_arr, matching_coord, f = 0.5):
         # Inserting new image to array
         new_img_arr.append(img)
     return np.stack(new_img_arr).astype(int)
+
+
+# Computing Homography
+def compute_homography(matched_coord):
+    matched_coord = matched_coord.reshape(-1, 4)
+    A, B = [], []
+    for coord in matched_coord:
+        x2, y2, x1, y1 = coord              # Changing x to y will make later computation easier
+        A.append([x1, y1, 1, 0, 0, 0, -x1*x2, -y1*x2])
+        A.append([0, 0, 0, x1, y1, 1, -x1*y2, -y1*y2])
+        B.append([x2])
+        B.append([y2])
+    A = np.array(A)
+    B = np.array(B)
+    H = np.matmul(np.linalg.inv(np.matmul(A.T, A)), np.matmul(A.T, B)).reshape((-1,))
+    H = np.concatenate([H, [1]]).reshape((3, 3))
+    return H
+
+# Perform transformation via homography
+def transform_homography(coord, H):
+    coord = np.concatenate([coord, np.ones((coord.shape[0], 1))], axis = 1).T
+    transformed_coord = np.matmul(H, coord)
+    transformed_coord /= transformed_coord[2, :]
+    return transformed_coord[:2, :].T
+
+# Calculate mean squared error for homography
+def mse_homography(matched_coord, H):
+    transformed_coord = transform_homography(matched_coord[:, 1, :], H)
+    err = np.sqrt(np.sum(np.square(matched_coord[:, 0, :] - transformed_coord))/matched_coord.shape[0])
+    return err
+
+# Calculate mse loss on arr of homography
+def mse_homography_arr(matched_coord_arr, H_arr):
+    return apply_arr(matched_coord_arr, mse_homography, H_arr, dynamic=True)
+
+# RANSAC algorithm for computing homography
+def ransac_homography(matched_coord, iter = 1000, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 5, threshold_inc = 1, frac_inlier = 0.8, log = True):
+    best_fit = compute_homography(matched_coord)
+    best_err = mse_homography(matched_coord, best_fit)
+    num_data = matched_coord.shape[0]
+    num_sample = int(frac_sample*num_data)
+    if num_sample < 8:
+        num_sample = min(8, num_data)
+    num_inlier = int(frac_inlier*num_data)
+    
+    # Iterating while calculating homography over random sample
+    while err_threshold <= max_err_threshold:
+        for _ in range(iter):
+            # Taking random sample
+            sample_ind = np.random.choice(num_data, size=num_sample, replace=False)
+            maybe_inliers = matched_coord[sample_ind]
+            
+            # Computing homography of random sample
+            maybe_model = compute_homography(maybe_inliers)
+            
+            # Figuring out Inliers
+            err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), maybe_model), arr = matched_coord.reshape((-1, 4)), axis = 1)
+            confirmed_Inliers = matched_coord[err < err_threshold]
+            
+            # If number of inliers are less than specified, redo loop
+            if confirmed_Inliers.shape[0] < num_inlier:
+                continue
+            
+            # Finding better model from confirmed Inliers
+            better_model = compute_homography(confirmed_Inliers)
+            this_err = mse_homography(confirmed_Inliers, better_model)
+            if this_err < best_err:
+                best_fit = better_model
+                best_err = this_err
+        
+        # If no good model found, increasing error threshold and again calling function recursively
+        err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), best_fit), arr = matched_coord.reshape((-1, 4)), axis = 1)
+        confirmed_Inliers = matched_coord[err < err_threshold]
+        if confirmed_Inliers.shape[0] > num_inlier:
+            break
+        err_threshold += threshold_inc
+
+    # Printing Log
+    if log:    
+        print(f"Homography Error: {best_err}\tInlier: {confirmed_Inliers.shape[0]}\tData Size: {num_data}\tError Threshold: {err_threshold}")
+    
+    return best_fit
