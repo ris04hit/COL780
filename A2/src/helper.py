@@ -132,6 +132,8 @@ def gray_scale(img):
 def set_contrast(img, c):
     f = (259*(c+255))/(255*(259-c))
     contrast_img = (f*(img-128)+128)
+    contrast_img[contrast_img < 0] = 0
+    contrast_img[contrast_img > 256] = 256
     return contrast_img.astype(int)
 
 # Preprocessing (Contrast Adjustment)
@@ -172,7 +174,7 @@ def harris_corner_detector(img, window_size = 3, k = 0.04, t = 1e9):
     return keypoint
 
 # Laplace Harris Feature Detector
-def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10):
+def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 2e6, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 0):
     img = np.copy(img)
     
     # Calculates gradient
@@ -180,7 +182,7 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10
     
     # Calculating summed matrix
     R_arr = []
-    for sigma in [1, 2, 4, 8, 16]:
+    for sigma in [scale_factor**i for i in range(num_scale)]:
         kernel = log_kernel(window_size, sigma=sigma)
         I_x2 = convolve2d(I_x**2, kernel)
         I_y2 = convolve2d(I_y**2, kernel)
@@ -193,17 +195,23 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10
         
     # Calculating local maxima
     R = np.stack(R_arr)
-    keypoint = local_maxima(R) & (R>t)
-    keypoint = np.max(keypoint, axis = 0)
+    max_R = local_maxima(R)
+    keypoint = np.zeros_like(R, dtype=bool)
+    while np.count_nonzero(keypoint) <= num_pt:
+        keypoint = max_R & (R>t)
+        keypoint = np.max(keypoint, axis = 0)
+        
+        # Cropping features at edge
+        keypoint[:edge_t, :] = False
+        keypoint[-edge_t:, :] = False
+        keypoint[:, :edge_t] = False
+        keypoint[:, -edge_t:] = False
+        
+        t /= 2
     
-    # Cropping features at edge
-    keypoint[:edge_t, :] = False
-    keypoint[-edge_t:, :] = False
-    keypoint[:, :edge_t] = False
-    keypoint[:, -edge_t:] = False
 
     return keypoint
-    
+
 
 # Insert Keypoint into img
 def insert_keypoint(img, keypoint, thickness = 11):
@@ -221,7 +229,7 @@ def insert_keypoint(img, keypoint, thickness = 11):
     return img
 
 # Feature detection
-def feature_detector(img_arr, mode, low_resolution = True, save = False):
+def feature_detector(img_arr, mode, low_resolution = 2, save = False):
     '''
     mode = 'h': Harris Corner Detector
     mode = 'l': Laplace Harris
@@ -233,13 +241,13 @@ def feature_detector(img_arr, mode, low_resolution = True, save = False):
         
     img_arr = np.copy(img_arr)
     inp_img_arr = np.copy(img_arr)
-    if low_resolution:
-        inp_img_arr = apply_arr(img_arr, set_resolution)
+    for _ in range(low_resolution):
+        inp_img_arr = apply_arr(inp_img_arr, set_resolution)
 
     keypoint = apply_arr(inp_img_arr, func)
     if low_resolution:
         _keypoint = np.zeros(img_arr.shape, dtype=bool)
-        _keypoint[:, ::2, ::2] = keypoint
+        _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution)] = keypoint
         keypoint = _keypoint
 
     if save:
@@ -247,3 +255,53 @@ def feature_detector(img_arr, mode, low_resolution = True, save = False):
     else:
         img_arr = []
     return img_arr, keypoint
+
+
+# SIFT
+def sift(grad_norm, grad_angle, ill_threshold = 0.2):
+    histogram_arr = []
+    grad_class = (4*grad_angle/np.pi).astype(int) % 8   # Calculating bin of hist to which particular pixel belongs
+    
+    for i in range(0, 16, 4):
+        for j in range(0, 16, 4):
+            hist = np.zeros((8,))
+            hist[grad_class[i:i+4, j:j+4]] += grad_norm[i:i+4, j:j+4]
+            histogram_arr.append(hist)
+            
+    histogram_arr = np.concatenate(histogram_arr)
+    
+    if np.sqrt(np.sum(np.square(histogram_arr))) != 0:
+        histogram_arr = histogram_arr/np.sqrt(np.sum(np.square(histogram_arr)))      # Normalizing
+        histogram_arr[histogram_arr > ill_threshold] = ill_threshold                 # Illumination invariance
+        histogram_arr = histogram_arr/np.sqrt(np.sum(np.square(histogram_arr)))      # Normalizing again
+    
+    return histogram_arr
+
+# Apply SIFT on multiple keypoints
+# Assumes keypoint to be far from edge of image and image to be much larger than patch
+def sift_arr(img, keypoint):
+    Ix, Iy = gradient(img)
+    grad_angle = np.arctan2(Iy, Ix)
+    grad_norm = np.sqrt(Ix**2+Iy**2)
+    keypoint_index = np.argwhere(keypoint)
+    descriptor_arr = []
+    for ind in keypoint_index:
+        y, x = ind
+        grad_angle_patch = grad_angle[y-8:y+8, x-8:x+8]
+        grad_norm_patch = grad_norm[y-8:y+8, x-8:x+8]
+        descriptor = sift(grad_norm_patch, grad_angle_patch)
+        descriptor_arr.append(descriptor)
+    descriptor_arr = np.stack(descriptor_arr)
+    return descriptor_arr
+
+# Feature descriptor
+def feature_descriptor(img_arr, keypoint_arr, mode):
+    '''
+    mode = 's': SIFT
+    '''
+    if mode == 's':
+        func = sift_arr
+        
+    descriptor_arr = apply_arr(img_arr, func, keypoint_arr, np_conv=False, dynamic=True)
+    keypoint_index_arr = [np.argwhere(keypoint) for keypoint in keypoint_arr]
+    return descriptor_arr, keypoint_index_arr
