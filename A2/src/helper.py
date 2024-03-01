@@ -174,7 +174,7 @@ def harris_corner_detector(img, window_size = 3, k = 0.04, t = 1e9):
     return keypoint
 
 # Laplace Harris Feature Detector
-def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 2e6, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 0):
+def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e6, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 0):
     img = np.copy(img)
     
     # Calculates gradient
@@ -217,6 +217,7 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 2e6, edge_t = 10
 def insert_keypoint(img, keypoint, thickness = 11):
     keypoint = np.copy(keypoint)
     img = np.copy(img)
+    
     print(img.shape, np.count_nonzero(keypoint))
     
     # Thickening Keypoint
@@ -305,3 +306,122 @@ def feature_descriptor(img_arr, keypoint_arr, mode):
     descriptor_arr = apply_arr(img_arr, func, keypoint_arr, np_conv=False, dynamic=True)
     keypoint_index_arr = [np.argwhere(keypoint) for keypoint in keypoint_arr]
     return descriptor_arr, keypoint_index_arr
+
+
+# Finding corresponding descriptor in img
+def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.7):
+    '''
+    ret = 0: returns Index
+    ret = 1: returns Descriptor
+    norm: Describes which powered norm to be taken for distance calculation
+    '''
+    norm_descriptor_arr = np.sum(np.abs(img_descriptor_arr - keypt_descriptor)**norm, axis = 1)**(1/norm)
+    first_ind, second_ind = np.argpartition(norm_descriptor_arr, 2)[[0, 1]]
+    if norm_descriptor_arr[second_ind]:
+        ratio = norm_descriptor_arr[first_ind]/norm_descriptor_arr[second_ind]
+    else:
+        return np.nan       # If both first and second best are identical
+    if ratio > 1:
+        raise Exception("argpartition is invalid")      # Something buggy with code
+    if ratio > ratio_threshold:
+        return np.nan       # If first and second best are quite similar
+    if ret:
+        return norm_descriptor_arr[first_ind]
+    return first_ind
+
+# Matches descriptors of arrays
+def match_descriptor(descriptor_arr1, descriptor_arr2):
+    desc_ind1 = apply_arr(descriptor_arr1, lambda descriptor: find_descriptor(descriptor, descriptor_arr2))
+    desc_ind1_arg = np.argwhere(~np.isnan(desc_ind1)).reshape((-1,))
+    desc_ind1_without_nan = desc_ind1[~np.isnan(desc_ind1)].astype(int)
+    desc_ind2 = apply_arr(descriptor_arr2[desc_ind1_without_nan], lambda descriptor: find_descriptor(descriptor, descriptor_arr1))
+    match_arg = desc_ind2 == desc_ind1_arg
+    matching = np.stack([desc_ind1_arg[match_arg], desc_ind1_without_nan[match_arg]])
+    return matching
+
+# Coordinate Correspondence
+def match_coord(desciptor_list, keypoint_index_list):
+    num_img = len(desciptor_list)
+    if num_img < 1:
+        raise Exception("No image")
+    
+    matching_list = []
+    for ind in range(num_img-1):
+        corresp_desc = match_descriptor(desciptor_list[ind], desciptor_list[ind+1])
+        coord1 = keypoint_index_list[ind][corresp_desc[0, :]]
+        coord2 = keypoint_index_list[ind+1][corresp_desc[1, :]]
+        matching_list.append(np.stack([coord1, coord2], axis=1))
+
+    return matching_list
+
+# Implements bresenham algorithm
+def bresenham_line(c0, c1):
+    x0, y0 = c0
+    x1, y1 = c1
+    
+    points = []
+
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    steep = dy > dx
+
+    if steep:
+        x0, y0 = y0, x0
+        x1, y1 = y1, x1
+
+    if x0 > x1:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+
+    dx = x1 - x0
+    dy = abs(y1 - y0)
+    error = int(dx / 2)
+    ystep = 1 if y0 < y1 else -1
+    y = y0
+
+    for x in range(x0, x1 + 1):
+        coord = (y, x) if steep else (x, y)
+        points.append(coord)
+        error -= dy
+        if error < 0:
+            y += ystep
+            error += dx
+
+    return np.array(points)
+
+# Create Image to visualize matching points
+def create_match_img(img_arr, matching_coord, f = 0.5):
+    img_arr = np.copy(img_arr)
+    num_img = img_arr.shape[0]
+    if num_img < 2:
+        raise Exception("Less than 2 images")
+    
+    # Different array for different size offset
+    img_size = np.array(np.shape(img_arr[0, :, :]))
+    img_size0 = np.array([img_size[0], 0])
+    img_size1 = np.array([0, img_size[1]])
+    
+    new_img_arr = []
+    # Loop for image pairs
+    for ind in range(num_img - 1):
+        # Creating new image via concatenation
+        img1 = np.concatenate([np.copy(img_arr[ind]), np.copy(img_arr[ind+1])], axis = 1)
+        img2 = np.concatenate([np.copy(img_arr[ind+1]), np.copy(img_arr[ind])], axis = 1)
+        img = np.concatenate([img1, img2], axis = 0)*f + 256*(1-f)
+        
+        # Joining Corresponding points
+        line_coord = []
+        for elem in matching_coord[ind]:
+            line_coord.append(bresenham_line(elem[0, :], elem[1, :] + img_size0))
+            line_coord.append(bresenham_line(elem[0, :], elem[1, :] + img_size1))
+            line_coord.append(bresenham_line(elem[0, :] + img_size, elem[1, :] + img_size0))
+            line_coord.append(bresenham_line(elem[0, :] + img_size, elem[1, :] + img_size1))
+        line_coord = np.concatenate(line_coord)
+        
+        # Showing line in image
+        for y, x in line_coord:
+            img[y, x] = 0
+        
+        # Inserting new image to array
+        new_img_arr.append(img)
+    return np.stack(new_img_arr).astype(int)

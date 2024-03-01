@@ -62,10 +62,17 @@ if __name__ == "__main__":
     descriptor_list, keypoint_index_list = helper.feature_descriptor(preprocessed_img_arr, keypoint_arr, mode = 's')
     descriptor_time = time.time()
     
+    # Matching Descriptors
+    matched_coord = helper.match_coord(descriptor_list, keypoint_index_list)
+    if save_bool:
+        matched_img = helper.create_match_img(preprocessed_img_arr, matched_coord)
+    matching_time = time.time()
+    
     # Saving intermediate images
     if save_bool:
         save('temp/preprocess', preprocessed_img_arr, pan_path)
         save('temp/feature', feature_detected_img_arr, pan_path)
+        save('temp/match', matched_img, pan_path)
     
     pan_img = img_arr[np.random.randint(0, img_arr.shape[0])]
     end_time = time.time()
@@ -78,5 +85,7 @@ if __name__ == "__main__":
     print(f"Preprocess Time Taken:\t\t\t{preprocess_time - read_time}")
     print(f"Feature Detection Time Taken:\t\t{feature_time - preprocess_time}")
     print(f"Feature Descriptor Time Taken:\t\t{descriptor_time - feature_time}")
-    print(f"Saving Time Taken:\t\t\t{end_time - descriptor_time}")
+    print(f"Descriptor Matching Time Taken:\t\t{matching_time - descriptor_time}")
+    print(f"Saving Time Taken:\t\t\t{end_time - matching_time}")
+    print()
     
