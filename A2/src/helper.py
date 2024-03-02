@@ -175,7 +175,7 @@ def harris_corner_detector(img, window_size = 3, k = 0.04, t = 1e9):
     return keypoint
 
 # Laplace Harris Feature Detector
-def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e6, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 0):
+def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 3000):
     img = np.copy(img)
     
     # Calculates gradient
@@ -208,14 +208,14 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e6, edge_t = 10
         keypoint[:, :edge_t] = False
         keypoint[:, -edge_t:] = False
         
-        t /= 2
+        t /= 1.1
     
 
     return keypoint
 
 
 # Insert Keypoint into img
-def insert_keypoint(img, keypoint, thickness = 11, log = True):
+def insert_keypoint(img, keypoint, thickness = 11, log = False):
     keypoint = np.copy(keypoint)
     img = np.copy(img)
     
@@ -311,7 +311,7 @@ def feature_descriptor(img_arr, keypoint_arr, mode):
 
 
 # Finding corresponding descriptor in img
-def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.8):
+def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.7):
     '''
     ret = 0: returns Index
     ret = 1: returns Descriptor
@@ -430,19 +430,43 @@ def create_match_img(img_arr, matching_coord, f = 0.5):
 
 
 # Computing Homography
-def compute_homography(matched_coord):
+def compute_homography(matched_coord, mode):
+    '''
+    mode = 'm': Matrix method (general)
+    mode = 'c': Calculus (affine)
+    '''
     matched_coord = matched_coord.reshape(-1, 4)
-    A, B = [], []
-    for coord in matched_coord:
-        x2, y2, x1, y1 = coord              # Changing x to y will make later computation easier
-        A.append([x1, y1, 1, 0, 0, 0, -x1*x2, -y1*x2])
-        A.append([0, 0, 0, x1, y1, 1, -x1*y2, -y1*y2])
-        B.append([x2])
-        B.append([y2])
-    A = np.array(A)
-    B = np.array(B)
-    H = np.matmul(np.linalg.inv(np.matmul(A.T, A)), np.matmul(A.T, B)).reshape((-1,))
-    H = np.concatenate([H, [1]]).reshape((3, 3))
+    
+    if mode == 'm':
+        A, B = [], []
+        for coord in matched_coord:
+            x2, y2, x1, y1 = coord              # Changing x to y will make later computation easier
+            A.append([x1, y1, 1, 0, 0, 0, -x1*x2, -y1*x2])
+            A.append([0, 0, 0, x1, y1, 1, -x1*y2, -y1*y2])
+            B.append([x2])
+            B.append([y2])
+        A = np.array(A)
+        B = np.array(B)
+        H = np.matmul(np.linalg.inv(np.matmul(A.T, A)), np.matmul(A.T, B)).reshape((-1,))
+        H = np.concatenate([H, [1]]).reshape((3, 3))
+    
+    elif mode == 'c':
+        def transform(coord):
+            x2, y2, x1, y1 = coord
+            return np.array([
+                [x1*x1, x1*y1, x1, x1*x2, x1*y2],
+                [x1*y1, y1*y1, y1, y1*x2, y1*y2],
+                [x1, y1, 1, x2, y2],
+            ])
+        mat = np.apply_along_axis(transform, arr = matched_coord, axis = 1)
+        mat = np.sum(mat, axis = 0)
+        invA, B = np.linalg.inv(mat[:, :3]), mat[:, 3:]
+        H1 = np.matmul(invA, B[:, 0])
+        H2 = np.matmul(invA, B[:, 1])
+        H = np.stack([H1, H2, [0, 0, 1]])
+    else:
+        raise Exception ("No Mode Selected")
+    
     return H
 
 # Perform transformation via homography
@@ -463,14 +487,17 @@ def mse_homography_arr(matched_coord_arr, H_arr):
     return apply_arr(matched_coord_arr, mse_homography, H_arr, dynamic=True)
 
 # RANSAC algorithm for computing homography
-def ransac_homography(matched_coord, iter = 1000, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 5, threshold_inc = 1, frac_inlier = 0.8, log = True):
-    best_fit = compute_homography(matched_coord)
+def ransac_homography(matched_coord, iter = 1000, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 20, threshold_inc = 1, frac_inlier = 0.5, mode = 'c', log = True):
+    best_fit = compute_homography(matched_coord, mode = mode)
     best_err = mse_homography(matched_coord, best_fit)
     num_data = matched_coord.shape[0]
     num_sample = int(frac_sample*num_data)
-    if num_sample < 8:
-        num_sample = min(8, num_data)
+    if num_sample < 4:
+        num_sample = min(4, num_data)
     num_inlier = int(frac_inlier*num_data)
+    err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), best_fit), arr = matched_coord.reshape((-1, 4)), axis = 1)
+    confirmed_Inliers = matched_coord[err < err_threshold]
+    best_inlier_ct = confirmed_Inliers.shape[0]
     
     # Iterating while calculating homography over random sample
     while err_threshold <= max_err_threshold:
@@ -480,32 +507,170 @@ def ransac_homography(matched_coord, iter = 1000, frac_sample = 0.1, err_thresho
             maybe_inliers = matched_coord[sample_ind]
             
             # Computing homography of random sample
-            maybe_model = compute_homography(maybe_inliers)
+            maybe_model = compute_homography(maybe_inliers, mode = mode)
             
             # Figuring out Inliers
             err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), maybe_model), arr = matched_coord.reshape((-1, 4)), axis = 1)
             confirmed_Inliers = matched_coord[err < err_threshold]
+            this_inlier_ct = confirmed_Inliers.shape[0]
             
             # If number of inliers are less than specified, redo loop
-            if confirmed_Inliers.shape[0] < num_inlier:
+            if this_inlier_ct < num_inlier:
                 continue
             
             # Finding better model from confirmed Inliers
-            better_model = compute_homography(confirmed_Inliers)
+            better_model = compute_homography(confirmed_Inliers, mode = mode)
             this_err = mse_homography(confirmed_Inliers, better_model)
-            if this_err < best_err:
+            if (-this_inlier_ct, this_err) < (-best_inlier_ct, best_err):
                 best_fit = better_model
                 best_err = this_err
+                best_inlier_ct = this_inlier_ct
         
         # If no good model found, increasing error threshold and again calling function recursively
-        err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), best_fit), arr = matched_coord.reshape((-1, 4)), axis = 1)
-        confirmed_Inliers = matched_coord[err < err_threshold]
-        if confirmed_Inliers.shape[0] > num_inlier:
+        if best_inlier_ct > num_inlier:
             break
         err_threshold += threshold_inc
 
     # Printing Log
     if log:    
-        print(f"Homography Error: {best_err}\tInlier: {confirmed_Inliers.shape[0]}\tData Size: {num_data}\tError Threshold: {err_threshold}")
+        print(f"Homography Error: {best_err}\tInlier: {best_inlier_ct}\tData Size: {num_data}\tError Threshold: {err_threshold}")
     
     return best_fit
+
+# Interpolates image
+# To be done
+def interpolate_img(img, ct_pt, mode = 'l'):
+    '''
+    mode = 'l': Bilinear interpolation
+    '''
+    return img
+
+# Warping a coloured image via homography
+# ct is used for finding x dimension of transformed image
+def warp(img, homography, shape, mode = 'b'):
+    '''
+    mode = 'f': Forward warping
+    mode = 'b': Backward warping with bilinear interpolation
+    '''
+    if mode == 'f':
+        # Finding all possible coordinates
+        coord = np.argwhere(np.ones_like(img[:, :, 0]))
+        
+        # Transforming coordinates
+        transformed_coord = transform_homography(coord, homography).astype(int)
+        
+        # Computing image size
+        size_y, size_x = shape
+        
+        # Creating new warped image
+        transformed_img = np.zeros((size_y, size_x, 3))
+        ct_pt = np.zeros((size_y, size_x))              # To count number of points mapped to it
+        num_coord = coord.shape[0]
+        for ind in range(num_coord):
+            y1, x1 = coord[ind, :]
+            y2, x2 = transformed_coord[ind, :]
+            if 0 <= y2 < size_y and 0 <= x2 < size_x:
+                transformed_img[y2, x2, :] += img[y1, x1, :]
+                ct_pt[y2, x2] += 1
+            
+        # Handling overlapping pixels
+        ind = ct_pt != 0
+        for i in range(3):
+            transformed_img[:, :, i][ind]/=ct_pt[ind]
+    
+        return interpolate_img(transformed_img, ct_pt), ct_pt
+
+    elif mode == 'b':
+        # Creating new warped image
+        size_y, size_x = shape
+        transformed_img = np.zeros((size_y, size_x, 3))
+        
+        # Finding bounds
+        bound_coord = transform_homography(np.argwhere(np.ones_like(img[:, :, 0])), homography)
+        min_y = np.min(bound_coord[:, 0][bound_coord[:, 0] >= 0]).astype(int)
+        max_y = np.max(bound_coord[:, 0][bound_coord[:, 0] < size_y]).astype(int) + 1
+        min_x = np.min(bound_coord[:, 1][bound_coord[:, 1] >= 0]).astype(int)
+        max_x = np.max(bound_coord[:, 1][bound_coord[:, 1] < size_x]).astype(int) + 1
+
+        # Finding all possible coordinates
+        transformed_coord = np.argwhere(np.ones_like(transformed_img[:, :, 0]))
+        filter_ind = (min_y < transformed_coord[:, 0]) & (transformed_coord[:, 0] < max_y) 
+        filter_ind &= (min_x < transformed_coord[:, 1]) & (transformed_coord[:, 1] < max_x)
+        transformed_coord = transformed_coord[filter_ind]
+        
+        # Transforming coordinates
+        homography = np.linalg.inv(homography)
+        homography /= homography[2,2]
+        coord = transform_homography(transformed_coord, homography)
+        
+        # Setting pixel intensities in transformed image
+        num_coord = coord.shape[0]
+        ct_pt = np.zeros(shape).astype(bool)
+        for ind in range(num_coord):
+            y1, x1 = coord[ind]
+            if 0 <= y1 < img.shape[0]-1 and 0 <= x1 < img.shape[1]-1:
+                y2, x2 = transformed_coord[ind]
+                yt, xl = int(y1//1), int(x1//1)
+                yb, xr = yt+1, xl+1
+                
+                It = (x1-xl)*img[yt, xr, :] + (xr-x1)*img[yt, xl, :]
+                Ib = (x1-xl)*img[yb, xr, :] + (xr-x1)*img[yb, xl, :]
+                transformed_img[y2, x2, :] = (y1-yt)*Ib + (yb-y1)*It
+                
+                ct_pt[y2, x2] = True
+                
+        return transformed_img, ct_pt
+        
+    else:
+        raise Exception("Invalid Mode")
+    
+# Warping array of coloured images via compound homography
+def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
+    '''
+    mode = 'l': Linear warp images taking middle image as base
+    '''
+    img_arr = np.copy(img_arr)
+    
+    if mode == 'l':
+        warped_arr = []
+        ct_pt = []
+        num_img = img_arr.shape[0]
+
+        # Creating compound homography
+        compound_homography = np.stack([np.eye(3) for i in range(num_img)])
+        base_img_ind = (num_img-1)//2
+        compound_homography[base_img_ind, 1, 2] += (base_img_ind*img_arr.shape[2]*x_size)//num_img # Centering of base img
+        for i in range(base_img_ind+1, num_img):
+            cascade_homography = np.matmul(compound_homography[i-1, :, :], homography_arr[i-1, :, :])
+            cascade_homography /= cascade_homography[2, 2]
+            compound_homography[i, :, :] = cascade_homography
+        for i in range(base_img_ind-1, -1, -1):
+            cascade_homography = np.matmul(compound_homography[i+1, :, :], np.linalg.inv(homography_arr[i, :, :]))
+            cascade_homography /= cascade_homography[2, 2]
+            compound_homography[i, :, :] = cascade_homography
+        
+        # Applying compound homography
+        transformed_shape = (img_arr.shape[1], x_size*img_arr.shape[2])
+        for i in range(num_img):
+            transformed_img, ct = warp(img_arr[i, :, :, :], compound_homography[i], transformed_shape)
+            warped_arr.append(transformed_img)
+            ct_pt.append(ct)
+                
+    else:
+        raise Exception("No Valid Mode")
+
+    return np.stack(warped_arr), np.stack(ct_pt)
+
+
+# Blending image togethor
+def blend(img_arr, ct_pt, mode = 's'):
+    '''
+    mode = 's': Simple average
+    '''
+    img = np.sum(img_arr, axis = 0)
+    ct = np.sum(ct_pt, axis = 0)
+    ind = ct != 0
+    for i in range(3):
+        img[:, :, i][ind] /= ct[ind]
+
+    return img

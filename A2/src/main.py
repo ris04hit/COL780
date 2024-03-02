@@ -11,7 +11,8 @@ def save(out_path, img_arr, inp_path):
     dir = os.path.join(out_path, inp_path.split("/")[-1].split(".")[0])
     if not os.path.exists(dir):
         os.mkdir(dir)
-    for i in range(img_arr.shape[0]):
+    size = len(img_arr) if type(img_arr) != np.ndarray else img_arr.shape[0]
+    for i in range(size):
         cv2.imwrite(os.path.join(dir, f"{i}.png"), img_arr[i])
 
 if __name__ == "__main__":
@@ -76,21 +77,33 @@ if __name__ == "__main__":
     
     # Computing Homography
     homography = helper.apply_arr(matched_coord, helper.ransac_homography)
+    mse = helper.mse_homography_arr(matched_coord, homography)
     homography_time = time.time()
+    print(f"Homography Error (with outlier)\t\t{mse}")
     print(f"Homography Time Taken:\t\t\t{homography_time - matching_time}")
+    
+    # Warping
+    warped_img_arr, ct_pt = helper.warp_arr(img_arr, homography)
+    warping_time = time.time()
+    print(f"Warping Time Taken:\t\t\t{warping_time - homography_time}")
+    
+    # Blending
+    blended_img = helper.blend(warped_img_arr, ct_pt)
+    blending_time = time.time()
+    print(f"Blending Time Taken:\t\t\t{blending_time - warping_time}")
     
     # Saving intermediate images
     if save_bool:
         save('temp/preprocess', preprocessed_img_arr, pan_path)
         save('temp/feature', feature_detected_img_arr, pan_path)
         save('temp/match', matched_img, pan_path)
-    
-    pan_img = img_arr[np.random.randint(0, img_arr.shape[0])]
-    end_time = time.time()
-    print(f"Saving Time Taken:\t\t\t{end_time - homography_time}")
+        save('temp/warp', warped_img_arr, pan_path)
     
     # Saving Final Panorama
-    cv2.imwrite(pan_path, pan_img)
+    cv2.imwrite(pan_path, blended_img)
+    end_time = time.time()
+    print(f"Saving Time Taken:\t\t\t{end_time - blending_time}")
+    
     print(f"Processed {pan_path}")
     print(f"Total Time Taken:\t\t\t{end_time - start_time}")
     print()
