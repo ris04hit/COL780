@@ -113,14 +113,14 @@ def set_resolution(img, inp_smoothen = False, out_smoothen = True, kernel_size =
     
     # Gaussian smoothing before setting resolution
     if inp_smoothen:
-        img = convolve_func(img, gaussian_filter_kernel(5))
+        img = convolve_func(img, gaussian_filter_kernel(kernel_size))
         
     # Reducing resolution
-    img = img[::2, ::2] if len(img.shape) == 2 else img[::2, ::2, ]
+    img = img[::2, ::2] if len(img.shape) == 2 else img[::2, ::2, :]
     
     # Gaussian smoothing after setting resolution
     if out_smoothen:
-        img = convolve_func(img, gaussian_filter_kernel(5))
+        img = convolve_func(img, gaussian_filter_kernel(kernel_size))
     
     return img
 
@@ -138,23 +138,27 @@ def set_contrast(img, c):
     return contrast_img.astype(int)
 
 # Preprocessing (Contrast Adjustment)
-def preprocess(img_arr, contrast = 50, kernel_size = 5):
+def preprocess(img_arr, contrast = 50, kernel_size = 5, color = True):
     img_arr = np.copy(img_arr)
     
     # Gray scale
-    img_arr = apply_arr(img_arr, gray_scale)
+    if not color:
+        img_arr = apply_arr(img_arr, gray_scale)
     
     # Setting contrast
     img_arr = set_contrast(img_arr, contrast)
     
     # Gaussian Smoothening
-    img_arr = apply_arr(img_arr, convolve2d, gaussian_filter_kernel(kernel_size))
+    if color:
+        img_arr = apply_arr(img_arr, convolve2d_color, gaussian_filter_kernel(kernel_size))
+    else:
+        img_arr = apply_arr(img_arr, convolve2d, gaussian_filter_kernel(kernel_size))
     
     return img_arr
 
 
 # Harris Corner Detector
-def harris_corner_detector(img, window_size = 3, k = 0.04, t = 1e9):
+def harris_corner_detector(img, window_size = 3, k = 0.06, t = 1e9):
     img = np.copy(img)
     
     # Calculates gradient
@@ -175,22 +179,26 @@ def harris_corner_detector(img, window_size = 3, k = 0.04, t = 1e9):
     return keypoint
 
 # Laplace Harris Feature Detector
-def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 3000):
+def laplace_harris_detector(img, window_size = 5, k = 0.06, t = 1e8, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 1000):
     img = np.copy(img)
+    color = True if len(img.shape) == 3 else False
     
     # Calculates gradient
     I_x, I_y = gradient(img)
     
     # Calculating summed matrix
     R_arr = []
+    conv_func = convolve2d_color if color else convolve2d
     for sigma in [scale_factor**i for i in range(num_scale)]:
         kernel = log_kernel(window_size, sigma=sigma)
-        I_x2 = convolve2d(I_x**2, kernel)
-        I_y2 = convolve2d(I_y**2, kernel)
-        I_xy = convolve2d(I_x*I_y, kernel)
+        I_x2 = conv_func(I_x**2, kernel)
+        I_y2 = conv_func(I_y**2, kernel)
+        I_xy = conv_func(I_x*I_y, kernel)
     
         # Calculating score R
         R = I_x2*I_y2 - I_xy*I_xy - k*(I_x2 + I_y2)**2
+        if color:
+            R = np.sum(R, axis = -1)
         
         R_arr.append(R)
         
@@ -215,7 +223,7 @@ def laplace_harris_detector(img, window_size = 7, k = 0.04, t = 1e7, edge_t = 10
 
 
 # Insert Keypoint into img
-def insert_keypoint(img, keypoint, thickness = 11, log = False):
+def insert_keypoint(img, keypoint, thickness = 11, log = True,):
     keypoint = np.copy(keypoint)
     img = np.copy(img)
     
@@ -227,12 +235,16 @@ def insert_keypoint(img, keypoint, thickness = 11, log = False):
     keypoint = convolve2d(keypoint, np.ones((ker_size, ker_size))).astype(bool)
     
     # Inserting Keypoint
-    img[keypoint] = -128*np.sign(img[keypoint] - 128) + 128
+    if len(img.shape) == 2:
+        img[keypoint] = -128*np.sign(img[keypoint] - 128) + 128
+    else:
+        for i in range(img.shape[2]):
+            img[:, :, i][keypoint] = -128*np.sign(img[:, :, i][keypoint] - 128) + 128 
     
     return img
 
 # Feature detection
-def feature_detector(img_arr, mode, low_resolution = 1, save = False):
+def feature_detector(img_arr, mode, low_resolution = 0, save = False):
     '''
     mode = 'h': Harris Corner Detector
     mode = 'l': Laplace Harris
@@ -244,13 +256,17 @@ def feature_detector(img_arr, mode, low_resolution = 1, save = False):
         
     img_arr = np.copy(img_arr)
     inp_img_arr = np.copy(img_arr)
+    color = True if len(img_arr.shape) == 4 else False
     for _ in range(low_resolution):
         inp_img_arr = apply_arr(inp_img_arr, set_resolution)
 
     keypoint = apply_arr(inp_img_arr, func)
     if low_resolution:
         _keypoint = np.zeros(img_arr.shape, dtype=bool)
-        _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution)] = keypoint
+        if color:
+            _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution), :] = keypoint
+        else:
+            _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution)] = keypoint
         keypoint = _keypoint
 
     if save:
@@ -304,7 +320,11 @@ def feature_descriptor(img_arr, keypoint_arr, mode):
     '''
     if mode == 's':
         func = sift_arr
-        
+    
+    color = True if len(img_arr.shape) == 4 else False
+    img_arr = np.copy(img_arr)
+    if color:
+        img_arr = apply_arr(img_arr, gray_scale)
     descriptor_arr = apply_arr(img_arr, func, keypoint_arr, np_conv=False, dynamic=True)
     keypoint_index_arr = [np.argwhere(keypoint) for keypoint in keypoint_arr]
     return descriptor_arr, keypoint_index_arr
@@ -394,12 +414,15 @@ def bresenham_line(c0, c1):
 # Create Image to visualize matching points
 def create_match_img(img_arr, matching_coord, f = 0.5):
     img_arr = np.copy(img_arr)
+    color = True if len(img_arr.shape) == 4 else False
     num_img = img_arr.shape[0]
     if num_img < 2:
         raise Exception("Less than 2 images")
     
     # Different array for different size offset
-    img_size = np.array(np.shape(img_arr[0, :, :]))
+    img_size = np.array(np.shape(img_arr[0]))
+    if color:
+        img_size = img_size[:-1]
     img_size0 = np.array([img_size[0], 0])
     img_size1 = np.array([0, img_size[1]])
     
@@ -422,7 +445,10 @@ def create_match_img(img_arr, matching_coord, f = 0.5):
         
         # Showing line in image
         for y, x in line_coord:
-            img[y, x] = 0
+            if color:
+                img[y, x, :] = 0
+            else:
+                img[y, x] = 0
         
         # Inserting new image to array
         new_img_arr.append(img)
@@ -432,11 +458,30 @@ def create_match_img(img_arr, matching_coord, f = 0.5):
 # Computing Homography
 def compute_homography(matched_coord, mode):
     '''
-    mode = 'm': Matrix method (general)
+    mode = 'm': Matrix method (general), might find singular matrix
     mode = 'c': Calculus (affine)
+    mode = 's': SVD decomposition
     '''
-    matched_coord = matched_coord.reshape(-1, 4)
+    matched_coord = np.copy(matched_coord.reshape(-1, 4))
     
+    # Normalization
+    mean = np.mean(matched_coord, axis = 0)
+    std = np.std(matched_coord, axis = 0)/np.sqrt(2)
+    matched_coord = (matched_coord - mean)/std
+    
+    # Matrices for getting final homography
+    S1T1 = np.array([
+        [1/std[2], 0, -mean[2]/std[2]],
+        [0, 1/std[3], -mean[3]/std[3]],
+        [0, 0, 1]
+    ])
+    S2T2_inv = np.array([
+        [std[0], 0, mean[0]],
+        [0, std[1], mean[1]],
+        [0, 0, 1]
+    ])
+    
+    # Computing homography
     if mode == 'm':
         A, B = [], []
         for coord in matched_coord:
@@ -449,6 +494,8 @@ def compute_homography(matched_coord, mode):
         B = np.array(B)
         H = np.matmul(np.linalg.inv(np.matmul(A.T, A)), np.matmul(A.T, B)).reshape((-1,))
         H = np.concatenate([H, [1]]).reshape((3, 3))
+        H = np.matmul(S2T2_inv, np.matmul(H, S1T1))
+        H /= H[2, 2]
     
     elif mode == 'c':
         def transform(coord):
@@ -464,6 +511,22 @@ def compute_homography(matched_coord, mode):
         H1 = np.matmul(invA, B[:, 0])
         H2 = np.matmul(invA, B[:, 1])
         H = np.stack([H1, H2, [0, 0, 1]])
+        H = np.matmul(S2T2_inv, np.matmul(H, S1T1))
+        H /= H[2, 2]
+        
+    elif mode == 's':
+        A = []
+        for coord in matched_coord:
+            x2, y2, x1, y1 = coord              # Changing x to y will make later computation easier
+            A.append([x1, y1, 1, 0, 0, 0, -x1*x2, -y1*x2, -x2])
+            A.append([0, 0, 0, x1, y1, 1, -x1*y2, -y1*y2, -y2])
+        A = np.array(A)
+        mat = np.matmul(A.T, A)
+        U, S, V = np.linalg.svd(mat)
+        H = V.T[:, -1].reshape((3,3))
+        H = np.matmul(S2T2_inv, np.matmul(H, S1T1))
+        H /= H[2,2]
+        
     else:
         raise Exception ("No Mode Selected")
     
@@ -473,7 +536,9 @@ def compute_homography(matched_coord, mode):
 def transform_homography(coord, H):
     coord = np.concatenate([coord, np.ones((coord.shape[0], 1))], axis = 1).T
     transformed_coord = np.matmul(H, coord)
-    transformed_coord /= transformed_coord[2, :]
+    # transformed_coord /= transformed_coord[2, :]
+    transformed_coord = np.divide(transformed_coord, transformed_coord[2, :], out = np.zeros_like(transformed_coord),
+                                  where = transformed_coord[2, :] != 0)
     return transformed_coord[:2, :].T
 
 # Calculate mean squared error for homography
@@ -487,7 +552,7 @@ def mse_homography_arr(matched_coord_arr, H_arr):
     return apply_arr(matched_coord_arr, mse_homography, H_arr, dynamic=True)
 
 # RANSAC algorithm for computing homography
-def ransac_homography(matched_coord, iter = 1000, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 20, threshold_inc = 1, frac_inlier = 0.5, mode = 'c', log = True):
+def ransac_homography(matched_coord, iter = 300, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 20, threshold_inc = 1, frac_inlier = 0.7, mode = 's', log = True):
     best_fit = compute_homography(matched_coord, mode = mode)
     best_err = mse_homography(matched_coord, best_fit)
     num_data = matched_coord.shape[0]
@@ -547,10 +612,12 @@ def interpolate_img(img, ct_pt, mode = 'l'):
 
 # Warping a coloured image via homography
 # ct is used for finding x dimension of transformed image
-def warp(img, homography, shape, mode = 'b'):
+def warp(img, homography, shape, mode = 'b', weight = 'b'):
     '''
     mode = 'f': Forward warping
     mode = 'b': Backward warping with bilinear interpolation
+    weight = 'l': Linear weights
+    weight = 'b': Binary weights
     '''
     if mode == 'f':
         # Finding all possible coordinates
@@ -605,7 +672,9 @@ def warp(img, homography, shape, mode = 'b'):
         
         # Setting pixel intensities in transformed image
         num_coord = coord.shape[0]
-        ct_pt = np.zeros(shape).astype(bool)
+        ct_pt = np.zeros(shape)
+        if weight == 'b':
+            ct_pt = ct_pt.astype(bool)
         for ind in range(num_coord):
             y1, x1 = coord[ind]
             if 0 <= y1 < img.shape[0]-1 and 0 <= x1 < img.shape[1]-1:
@@ -617,7 +686,10 @@ def warp(img, homography, shape, mode = 'b'):
                 Ib = (x1-xl)*img[yb, xr, :] + (xr-x1)*img[yb, xl, :]
                 transformed_img[y2, x2, :] = (y1-yt)*Ib + (yb-y1)*It
                 
-                ct_pt[y2, x2] = True
+                if weight == 'l':
+                    ct_pt[y2, x2] = min(x1, y1, img.shape[0]-y1, img.shape[1]-x1)
+                elif weight == 'b':
+                    ct_pt[y2, x2] = True
                 
         return transformed_img, ct_pt
         
@@ -625,7 +697,7 @@ def warp(img, homography, shape, mode = 'b'):
         raise Exception("Invalid Mode")
     
 # Warping array of coloured images via compound homography
-def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
+def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 3):
     '''
     mode = 'l': Linear warp images taking middle image as base
     '''
@@ -661,16 +733,81 @@ def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
 
     return np.stack(warped_arr), np.stack(ct_pt)
 
-
 # Blending image togethor
-def blend(img_arr, ct_pt, mode = 's'):
+def blend(img_arr, ct_pt, mode = 'g', crop = 2):
     '''
     mode = 's': Simple average
+    mode = 'l': Laplacian Pyramid
+    mode = 'a': alpha
+    mode = 'g': graph cut
+    mode = 'gp': graphcut with poisson blend  # To be implemented
     '''
-    img = np.sum(img_arr, axis = 0)
-    ct = np.sum(ct_pt, axis = 0)
-    ind = ct != 0
-    for i in range(3):
-        img[:, :, i][ind] /= ct[ind]
+    img_arr = np.copy(img_arr)[:, crop:img_arr.shape[1]-crop, crop:img_arr.shape[2]-crop, :]
+    ct_pt = np.copy(ct_pt)[:, crop:ct_pt.shape[1]-crop, crop: ct_pt.shape[2]-crop]
+    num_img = img_arr.shape[0]
+    
+    # Simple Average
+    if mode == 's':
+        img = np.sum(img_arr, axis = 0)
+        ct = np.sum(ct_pt, axis = 0)
+        ind = ct != 0
+        for i in range(3):
+            img[:, :, i][ind] /= ct[ind]
 
+    # Laplacian Pyramids
+    elif mode == 'l':
+        pass
+    
+    # Alpha blending
+    elif mode == 'a':
+        mask = np.copy(ct_pt)
+        sum_mask = np.sum(ct_pt, axis = 0)
+        ind = sum_mask != 0
+        for i in range(mask.shape[0]):
+            mask[i][ind]/=sum_mask[ind]
+        for i in range(3):
+            img_arr[:, :, :, i] *= mask
+        img = np.sum(img_arr, axis = 0)
+
+    # Graph cut
+    elif mode[0] == 'g':
+        img = np.copy(img_arr[0])
+        ct = np.copy(ct_pt[0])
+        for i in range(1, num_img):
+            if np.all(ct_pt[i] == 0):
+                continue
+            
+            # Computing difference for best seam
+            diff = np.sum((np.abs(img - img_arr[i])**2), axis = -1)
+            diff[(ct == 0) | (ct_pt[i] == 0)] = 256**2+1
+            
+            # Finding scores
+            for y in range(diff.shape[0]-2, -1, -1):
+                row = np.concatenate([[np.inf],diff[y+1, :],[np.inf]])
+                row = np.stack([row[1:-1], row[:-2], row[2:]])
+                row = np.min(row, axis = 0)
+                diff[y, :] += row
+                
+            # Finding best seam via greedy walk
+            seam_arr = []
+            seam = diff.shape[1]-1-np.argmin(diff[0, ::-1])
+            seam_arr.append(seam)
+            for y in range(diff.shape[0]-1):
+                seam += np.argmin(diff[y, max(0,seam-1):seam+2]) - 1
+                seam = min(max(0, seam), img.shape[1]-1)
+                seam_arr.append(seam)
+            seam_arr = np.array(seam_arr)
+            
+            # Either right most point of first image or seam value as predicted
+            min_seam = np.argmin(np.concatenate([ct, np.zeros((ct.shape[0],1))], axis=1), axis = 1)
+            comb_seam_arr = np.minimum(min_seam, seam_arr)
+            
+            # Blending using seam
+            for y in range(diff.shape[0]):
+                img[y, comb_seam_arr[y]:, :] = img_arr[i, y, comb_seam_arr[y]:, :]
+            
+            # updating ct
+            ct |= ct_pt[i]
+
+    
     return img
