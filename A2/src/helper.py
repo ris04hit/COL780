@@ -1,5 +1,89 @@
 import numpy as np
 
+# Implementing KDTree
+class KDNode():
+    def __init__(self, vec_arr, dim, num_leaf, parent, ind):
+        self.leaf = True if vec_arr.shape[0] <= num_leaf else False
+        self.parent = parent
+        if not self.leaf:
+            init_dim = dim
+            while True:
+                self.val = np.median(vec_arr[:, dim])
+                left_mask = vec_arr[:, dim] <= self.val
+                right_mask = vec_arr[:, dim] > self.val
+                if np.count_nonzero(left_mask) == 0 or np.count_nonzero(right_mask) == 0:
+                    dim = (dim + 1)%vec_arr.shape[1]
+                else:
+                    self.left = KDNode(vec_arr[left_mask], (dim+1)%vec_arr.shape[1], num_leaf, self, ind[left_mask])
+                    self.right = KDNode(vec_arr[right_mask], (dim+1)%vec_arr.shape[1], num_leaf, self, ind[right_mask])
+                    self.dim = dim
+                    return
+                if dim == init_dim:
+                    self.leaf = True
+                    break
+        # When self.leaf is True
+        self.val = vec_arr
+        self.ind = ind
+    
+    def next(self, vec):
+        if vec[self.dim] <= self.val:
+            return self.left
+        else:
+            return self.right
+        
+    def inv_next(self, vec):
+        if vec[self.dim] <= self.val:
+            return self.right
+        else:
+            return self.left
+    
+    def all_vec(self):
+        if self.leaf:
+            return self.val
+        return np.concatenate([self.left.all_vec(), self.right.all_vec()])
+    
+    def all_ind(self):
+        if self.leaf:
+            return self.ind
+        return np.concatenate([self.left.all_ind(), self.right.all_ind()])
+
+    def near2(self, vec, norm):
+        vec_arr = self.all_vec()
+        ind_arr = self.all_ind()
+        diff = np.sum(np.abs(vec_arr - vec)**norm, axis = 1)**(1/norm)
+        ind = np.argsort(diff)[:2]
+        return np.stack([diff[ind], ind_arr[ind]])
+    
+    def search2(self, vec, norm):
+        if self.leaf:
+            return self.near2(vec, norm)
+        
+        next_node = self.next(vec)
+        curr_best = next_node.search2(vec, norm)
+        
+        box_dist = np.abs(vec[self.dim] - self.val)
+        if box_dist > curr_best[0, -1]:
+            return curr_best
+        
+        inv_next_node = self.inv_next(vec)
+        possible_best = inv_next_node.near2(vec, norm)
+        
+        curr_best = np.concatenate([curr_best, possible_best], axis = 1)
+        curr_best = curr_best[:, np.argsort(curr_best[0])[:2]]
+        
+        return curr_best
+
+class KDTree():
+    def __init__(self, vec_arr, num_leaf = 10, norm = 1):
+        self.dim = vec_arr.shape[1]
+        self.norm = norm
+        self.root = KDNode(vec_arr, 0, num_leaf, None, np.arange(vec_arr.shape[0]))
+       
+    # Returns two nearest neighbor
+    def query2(self, vec):
+        return self.root.search2(vec, self.norm)
+
+
 # Function to create a gaussian filter matrix of desired dimension
 def gaussian_filter_kernel(n, sigma = 1):
     k = (n-1)//2
@@ -74,18 +158,18 @@ def convolve2d(img, kernel, complete = False):
 
 # Function to perform another function with array of images
 def apply_arr(img_arr, func, *args, np_conv = True, dynamic = False):
+    return_arr = []
     if dynamic:
         size = len(img_arr) if type(img_arr) != np.ndarray else img_arr.shape[0]
         args = [[args[j][i] for j in range(len(args))] for i in range(size)]
-        if np_conv:
-            return np.array([func(img_arr[i], *(args[i])) for i in range(size)])
-        else:
-            return [func(img_arr[i], *(args[i])) for i in range(size)]
+        for i in range(size):
+            return_arr.append(func(img_arr[i], *(args[i])))
     else:
-        if np_conv:
-            return np.array([func(img, *args) for img in img_arr])
-        else:
-            return [func(img, *args) for img in img_arr]
+        for img in img_arr:
+            return_arr.append(func(img, *args))
+    if np_conv:
+        return np.array(return_arr)
+    return return_arr
 
 # Calculates function gradient
 def gradient(img):
@@ -139,8 +223,6 @@ def set_contrast(img, c):
 
 # Preprocessing (Contrast Adjustment)
 def preprocess(img_arr, contrast = 50, kernel_size = 5, color = True):
-    img_arr = np.copy(img_arr)
-    
     # Gray scale
     if not color:
         img_arr = apply_arr(img_arr, gray_scale)
@@ -179,7 +261,7 @@ def harris_corner_detector(img, window_size = 3, k = 0.06, t = 1e9):
     return keypoint
 
 # Laplace Harris Feature Detector
-def laplace_harris_detector(img, window_size = 5, k = 0.06, t = 1e8, edge_t = 10, num_scale = 3, scale_factor = 1.5, num_pt = 1000):
+def laplace_harris_detector(img, window_size = 5, k = 0.04, max_t = 1e8, min_t = 1e6, edge_t = 5, num_scale = 3, scale_factor = 1.5, num_pt = 2000, num_comp = (2, 1)):
     img = np.copy(img)
     color = True if len(img.shape) == 3 else False
     
@@ -205,30 +287,40 @@ def laplace_harris_detector(img, window_size = 5, k = 0.06, t = 1e8, edge_t = 10
     # Calculating local maxima
     R = np.stack(R_arr)
     max_R = local_maxima(R)
-    keypoint = np.zeros_like(R, dtype=bool)
-    while np.count_nonzero(keypoint) <= num_pt:
-        keypoint = max_R & (R>t)
-        keypoint = np.max(keypoint, axis = 0)
-        
-        # Cropping features at edge
-        keypoint[:edge_t, :] = False
-        keypoint[-edge_t:, :] = False
-        keypoint[:, :edge_t] = False
-        keypoint[:, -edge_t:] = False
-        
-        t /= 1.1
+    
+    # Splitting image into blocks and thresholding per block
+    keypoint_global = np.zeros((img.shape[0], img.shape[1]), dtype=bool)
+    block_shape = (img.shape[0]//num_comp[0], img.shape[1]//num_comp[1])
+    for y in range(0, img.shape[0], block_shape[0]):
+        for x in range(0, img.shape[1], block_shape[1]):
+            local_t = max_t
+            keypoint_local = np.zeros(block_shape, dtype=bool)
+            max_R_local = max_R[:, y:y+block_shape[0], x:x+block_shape[1]]
+            R_local = R[:, y:y+block_shape[0], x:x+block_shape[1]]
+            while np.count_nonzero(keypoint_local) <= num_pt and local_t >= min_t:
+                keypoint_local = max_R_local & (R_local > local_t)
+                keypoint_local = np.max(keypoint_local, axis = 0)
+                
+                local_t /= 1.1
+            
+            keypoint_global[y:y+block_shape[0], x:x+block_shape[1]] = keypoint_local
+                
+    # Cropping features at edge
+    keypoint_global[:edge_t, :] = False
+    keypoint_global[-edge_t:, :] = False
+    keypoint_global[:, :edge_t] = False
+    keypoint_global[:, -edge_t:] = False
     
 
-    return keypoint
+    return keypoint_global
 
 
 # Insert Keypoint into img
 def insert_keypoint(img, keypoint, thickness = 11, log = True,):
-    keypoint = np.copy(keypoint)
     img = np.copy(img)
     
     if log:
-        print(img.shape, np.count_nonzero(keypoint))
+        print("Descriptor Count:\t", np.count_nonzero(keypoint))
     
     # Thickening Keypoint
     ker_size = (thickness+1)//2
@@ -254,19 +346,14 @@ def feature_detector(img_arr, mode, low_resolution = 0, save = False):
     if mode == 'l':
         func = lambda img: laplace_harris_detector(img)
         
-    img_arr = np.copy(img_arr)
     inp_img_arr = np.copy(img_arr)
-    color = True if len(img_arr.shape) == 4 else False
     for _ in range(low_resolution):
         inp_img_arr = apply_arr(inp_img_arr, set_resolution)
 
     keypoint = apply_arr(inp_img_arr, func)
     if low_resolution:
-        _keypoint = np.zeros(img_arr.shape, dtype=bool)
-        if color:
-            _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution), :] = keypoint
-        else:
-            _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution)] = keypoint
+        _keypoint = np.zeros(img_arr.shape[:3], dtype=bool)
+        _keypoint[:, ::(1<<low_resolution), ::(1<<low_resolution)] = keypoint
         keypoint = _keypoint
 
     if save:
@@ -326,12 +413,14 @@ def feature_descriptor(img_arr, keypoint_arr, mode):
     if color:
         img_arr = apply_arr(img_arr, gray_scale)
     descriptor_arr = apply_arr(img_arr, func, keypoint_arr, np_conv=False, dynamic=True)
-    keypoint_index_arr = [np.argwhere(keypoint) for keypoint in keypoint_arr]
+    keypoint_index_arr = []
+    for keypoint in keypoint_arr:
+        keypoint_index_arr.append(np.argwhere(keypoint))
     return descriptor_arr, keypoint_index_arr
 
 
 # Finding corresponding descriptor in img
-def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, ratio_threshold = 0.7):
+def find_descriptor(keypt_descriptor, img_descriptor_arr, ratio_threshold, norm = 1, ret = 0):
     '''
     ret = 0: returns Index
     ret = 1: returns Descriptor
@@ -352,14 +441,30 @@ def find_descriptor(keypt_descriptor, img_descriptor_arr, norm = 1, ret = 0, rat
     return first_ind
 
 # Matches descriptors of arrays
-def match_descriptor(descriptor_arr1, descriptor_arr2):
-    desc_ind1 = apply_arr(descriptor_arr1, lambda descriptor: find_descriptor(descriptor, descriptor_arr2))
-    desc_ind1_arg = np.argwhere(~np.isnan(desc_ind1)).reshape((-1,))
-    desc_ind1_without_nan = desc_ind1[~np.isnan(desc_ind1)].astype(int)
-    desc_ind2 = apply_arr(descriptor_arr2[desc_ind1_without_nan], lambda descriptor: find_descriptor(descriptor, descriptor_arr1))
-    match_arg = desc_ind2 == desc_ind1_arg
-    matching = np.stack([desc_ind1_arg[match_arg], desc_ind1_without_nan[match_arg]])
-    return matching
+def match_descriptor(descriptor_arr1, descriptor_arr2, mode = 't', ratio_threshold = 0.8):
+    '''
+    mode = 'n': Matching using norm
+    mode = 't': Matching using kd tree
+    '''
+    if mode == 'n':
+        desc_ind1 = apply_arr(descriptor_arr1, lambda descriptor: find_descriptor(descriptor, descriptor_arr2, ratio_threshold))
+        desc_ind1_arg = np.argwhere(~np.isnan(desc_ind1)).reshape((-1,))
+        desc_ind1_without_nan = desc_ind1[~np.isnan(desc_ind1)].astype(int)
+        desc_ind2 = apply_arr(descriptor_arr2[desc_ind1_without_nan], lambda descriptor: find_descriptor(descriptor, descriptor_arr1, ratio_threshold))
+        match_arg = desc_ind2 == desc_ind1_arg
+        matching = np.stack([desc_ind1_arg[match_arg], desc_ind1_without_nan[match_arg]])
+        return matching
+    
+    elif mode == 't':
+        kdtree = KDTree(descriptor_arr2)
+        result = apply_arr(descriptor_arr1, lambda descriptor: kdtree.query2(descriptor))
+        distance, index = result[:, 0, :], result[:, 1, :].astype(int)
+        ratio = np.divide(distance[:, 0],distance[:, 1], np.ones_like(distance[:, 0]), where = distance[:, 1] != 0)
+        del kdtree
+        return np.copy(np.stack([np.arange(descriptor_arr1.shape[0]), index[:, 0]])[:, ratio < ratio_threshold])
+    
+    else:
+        raise Exception("Invalid mode")
 
 # Coordinate Correspondence
 def match_coord(desciptor_list, keypoint_index_list):
@@ -536,10 +641,23 @@ def compute_homography(matched_coord, mode):
 def transform_homography(coord, H):
     coord = np.concatenate([coord, np.ones((coord.shape[0], 1))], axis = 1).T
     transformed_coord = np.matmul(H, coord)
-    # transformed_coord /= transformed_coord[2, :]
     transformed_coord = np.divide(transformed_coord, transformed_coord[2, :], out = np.zeros_like(transformed_coord),
                                   where = transformed_coord[2, :] != 0)
     return transformed_coord[:2, :].T
+
+# Performs cylinderical Transformation
+def transform_cylinderical(coord, w, h, r):
+    y_plan, x_plan = coord[:, 0], coord[:, 1]
+    x_cyl = r*np.arctan((x_plan - w/2)/r) + r*np.arctan(w/(2*r))
+    y_cyl = h/2 + r*(y_plan-h/2)/np.sqrt(r**2 + (x_plan-w/2)**2)
+    return np.stack([x_cyl, y_cyl]).T
+
+# Transforms into planar from cylinderical
+def transform_planar(coord, w, h, r):
+    y_cyl, x_cyl = coord[:, 0], coord[:, 1]
+    x_plan = w/2 + r*np.tan(x_cyl/r - np.arctan(w/(2*r)))
+    y_plan = h/2 + (y_cyl - h/2)*np.sqrt(r**2 + (x_plan-w/2)**2)/r
+    return np.stack([y_plan, x_plan]).T
 
 # Calculate mean squared error for homography
 def mse_homography(matched_coord, H):
@@ -552,13 +670,11 @@ def mse_homography_arr(matched_coord_arr, H_arr):
     return apply_arr(matched_coord_arr, mse_homography, H_arr, dynamic=True)
 
 # RANSAC algorithm for computing homography
-def ransac_homography(matched_coord, iter = 300, frac_sample = 0.1, err_threshold = 2, max_err_threshold = 20, threshold_inc = 1, frac_inlier = 0.7, mode = 's', log = True):
+def ransac_homography(matched_coord, iter = 1000, num_sample = 6, err_threshold = 2, max_err_threshold = 20, threshold_inc = 1, frac_inlier = 0.5, mode = 's', log = True):
     best_fit = compute_homography(matched_coord, mode = mode)
     best_err = mse_homography(matched_coord, best_fit)
     num_data = matched_coord.shape[0]
-    num_sample = int(frac_sample*num_data)
-    if num_sample < 4:
-        num_sample = min(4, num_data)
+    num_sample = min(num_sample, num_data)
     num_inlier = int(frac_inlier*num_data)
     err = np.apply_along_axis(lambda pt: mse_homography(pt.reshape((1, 2, 2)), best_fit), arr = matched_coord.reshape((-1, 4)), axis = 1)
     confirmed_Inliers = matched_coord[err < err_threshold]
@@ -612,7 +728,7 @@ def interpolate_img(img, ct_pt, mode = 'l'):
 
 # Warping a coloured image via homography
 # ct is used for finding x dimension of transformed image
-def warp(img, homography, shape, mode = 'b', weight = 'b'):
+def warp(img, homography, shape, mode = 'b', weight = 'b', cylinderical = False):
     '''
     mode = 'f': Forward warping
     mode = 'b': Backward warping with bilinear interpolation
@@ -661,23 +777,35 @@ def warp(img, homography, shape, mode = 'b', weight = 'b'):
 
         # Finding all possible coordinates
         transformed_coord = np.argwhere(np.ones_like(transformed_img[:, :, 0]))
-        filter_ind = (min_y < transformed_coord[:, 0]) & (transformed_coord[:, 0] < max_y) 
-        filter_ind &= (min_x < transformed_coord[:, 1]) & (transformed_coord[:, 1] < max_x)
-        transformed_coord = transformed_coord[filter_ind]
         
         # Transforming coordinates
         homography = np.linalg.inv(homography)
         homography /= homography[2,2]
         coord = transform_homography(transformed_coord, homography)
+        if cylinderical:
+            coord = transform_planar(coord, img.shape[1], img.shape[0], 800)
+        filter_ind = (0 <= coord[:, 0]) & (coord[:, 0] < img.shape[0]-1)
+        filter_ind &= (0 <= coord[:, 1]) & (coord[:, 1] < img.shape[1]-1)
+        coord = coord[filter_ind]
+        transformed_coord = transformed_coord[filter_ind]
         
         # Setting pixel intensities in transformed image
         num_coord = coord.shape[0]
         ct_pt = np.zeros(shape)
         if weight == 'b':
+            y1, x1 = coord[:, 0], coord[:, 1]
+            yt, xl = (y1//1).astype(int), (x1//1).astype(int)
+            y2, x2 = transformed_coord[:, 0], transformed_coord[:, 1]
+            
+            It = (x1-xl)*img[yt, xl+1, :].T + (xl+1-x1)*img[yt, xl, :].T
+            Ib = (x1-xl)*img[yt+1, xl+1, :].T + (xl+1-x1)*img[yt+1, xl, :].T
+            transformed_img[y2, x2, :] = ((y1-yt)*Ib + (yt+1-y1)*It).T
+            
             ct_pt = ct_pt.astype(bool)
-        for ind in range(num_coord):
-            y1, x1 = coord[ind]
-            if 0 <= y1 < img.shape[0]-1 and 0 <= x1 < img.shape[1]-1:
+            ct_pt[y2, x2] = True
+        elif weight == 'l':
+            for ind in range(num_coord):
+                y1, x1 = coord[ind]
                 y2, x2 = transformed_coord[ind]
                 yt, xl = int(y1//1), int(x1//1)
                 yb, xr = yt+1, xl+1
@@ -686,10 +814,7 @@ def warp(img, homography, shape, mode = 'b', weight = 'b'):
                 Ib = (x1-xl)*img[yb, xr, :] + (xr-x1)*img[yb, xl, :]
                 transformed_img[y2, x2, :] = (y1-yt)*Ib + (yb-y1)*It
                 
-                if weight == 'l':
-                    ct_pt[y2, x2] = min(x1, y1, img.shape[0]-y1, img.shape[1]-x1)
-                elif weight == 'b':
-                    ct_pt[y2, x2] = True
+                ct_pt[y2, x2] = min(x1, y1, img.shape[0]-y1, img.shape[1]-x1)
                 
         return transformed_img, ct_pt
         
@@ -697,7 +822,7 @@ def warp(img, homography, shape, mode = 'b', weight = 'b'):
         raise Exception("Invalid Mode")
     
 # Warping array of coloured images via compound homography
-def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 3):
+def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
     '''
     mode = 'l': Linear warp images taking middle image as base
     '''
@@ -733,6 +858,29 @@ def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 3):
 
     return np.stack(warped_arr), np.stack(ct_pt)
 
+
+# Equalize global illumination
+def equalize_brightness(img_arr, ct_pt, frac_threshold = 0.2):
+    for ind in range(img_arr.shape[0]-1):
+        common = ct_pt[ind] & ct_pt[ind+1]
+        
+        # Find the leftmost and rightmost 1 in each row
+        leftmost_1 = np.argmax(common, axis=1)
+        rightmost_1 = common.shape[1] - 1 - np.argmax(common[:, ::-1], axis=1)
+
+        # Create a new array with only the leftmost and rightmost 1 retained
+        result = np.zeros_like(common)
+        for i in range(common.shape[0]):
+            result[i, [leftmost_1[i], rightmost_1[i]]] = 1
+
+        boundary = result & common      # Take only points which belong to common as well
+        
+        if np.count_nonzero(boundary) > frac_threshold*img_arr.shape[1]:
+            diff = img_arr[ind] - img_arr[ind+1]
+            img_arr[ind+1] += np.mean(diff[boundary])
+    
+    return img_arr
+        
 # Blending image togethor
 def blend(img_arr, ct_pt, mode = 'g', crop = 2):
     '''
@@ -745,6 +893,9 @@ def blend(img_arr, ct_pt, mode = 'g', crop = 2):
     img_arr = np.copy(img_arr)[:, crop:img_arr.shape[1]-crop, crop:img_arr.shape[2]-crop, :]
     ct_pt = np.copy(ct_pt)[:, crop:ct_pt.shape[1]-crop, crop: ct_pt.shape[2]-crop]
     num_img = img_arr.shape[0]
+    
+    # Equalizing global brightness as preprocessing
+    img_arr = equalize_brightness(img_arr, ct_pt)
     
     # Simple Average
     if mode == 's':
@@ -800,11 +951,11 @@ def blend(img_arr, ct_pt, mode = 'g', crop = 2):
             
             # Either right most point of first image or seam value as predicted
             min_seam = np.argmin(np.concatenate([ct, np.zeros((ct.shape[0],1))], axis=1), axis = 1)
-            comb_seam_arr = np.minimum(min_seam, seam_arr)
+            seam_arr = np.minimum(min_seam, seam_arr)
             
             # Blending using seam
             for y in range(diff.shape[0]):
-                img[y, comb_seam_arr[y]:, :] = img_arr[i, y, comb_seam_arr[y]:, :]
+                img[y, seam_arr[y]:, :] = img_arr[i, y, seam_arr[y]:, :]
             
             # updating ct
             ct |= ct_pt[i]
