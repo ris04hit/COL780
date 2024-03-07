@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 
 # Implementing KDTree
 class KDNode():
@@ -441,7 +442,7 @@ def find_descriptor(keypt_descriptor, img_descriptor_arr, ratio_threshold, norm 
     return first_ind
 
 # Matches descriptors of arrays
-def match_descriptor(descriptor_arr1, descriptor_arr2, mode = 't', ratio_threshold = 0.8):
+def match_descriptor(descriptor_arr1, descriptor_arr2, mode = 't', ratio_threshold = 0.7):
     '''
     mode = 'n': Matching using norm
     mode = 't': Matching using kd tree
@@ -572,6 +573,7 @@ def compute_homography(matched_coord, mode):
     # Normalization
     mean = np.mean(matched_coord, axis = 0)
     std = np.std(matched_coord, axis = 0)/np.sqrt(2)
+    std[std == 0] = 1               # Prevent division by zero
     matched_coord = (matched_coord - mean)/std
     
     # Matrices for getting final homography
@@ -630,7 +632,8 @@ def compute_homography(matched_coord, mode):
         U, S, V = np.linalg.svd(mat)
         H = V.T[:, -1].reshape((3,3))
         H = np.matmul(S2T2_inv, np.matmul(H, S1T1))
-        H /= H[2,2]
+        if H[2,2] != 0:
+            H /= H[2,2]
         
     else:
         raise Exception ("No Mode Selected")
@@ -645,18 +648,11 @@ def transform_homography(coord, H):
                                   where = transformed_coord[2, :] != 0)
     return transformed_coord[:2, :].T
 
-# Performs cylinderical Transformation
-def transform_cylinderical(coord, w, h, r):
-    y_plan, x_plan = coord[:, 0], coord[:, 1]
-    x_cyl = r*np.arctan((x_plan - w/2)/r) + r*np.arctan(w/(2*r))
-    y_cyl = h/2 + r*(y_plan-h/2)/np.sqrt(r**2 + (x_plan-w/2)**2)
-    return np.stack([x_cyl, y_cyl]).T
-
 # Transforms into planar from cylinderical
-def transform_planar(coord, w, h, r):
-    y_cyl, x_cyl = coord[:, 0], coord[:, 1]
-    x_plan = w/2 + r*np.tan(x_cyl/r - np.arctan(w/(2*r)))
-    y_plan = h/2 + (y_cyl - h/2)*np.sqrt(r**2 + (x_plan-w/2)**2)/r
+def transform_planar(coord, cyl_shape, r, d):
+    y_cyl, x_cyl = coord[:, 0] - cyl_shape[0]/2, coord[:, 1] - cyl_shape[1]/2
+    x_plan = d*np.tan(x_cyl/r)
+    y_plan = y_cyl*np.sqrt(x_plan**2+d**2)/r + cyl_shape[0]/2
     return np.stack([y_plan, x_plan]).T
 
 # Calculate mean squared error for homography
@@ -728,7 +724,7 @@ def interpolate_img(img, ct_pt, mode = 'l'):
 
 # Warping a coloured image via homography
 # ct is used for finding x dimension of transformed image
-def warp(img, homography, shape, mode = 'b', weight = 'b', cylinderical = False):
+def warp(img, homography, shape, center, mode = 'b', weight = 'b', cylinderical = False):
     '''
     mode = 'f': Forward warping
     mode = 'b': Backward warping with bilinear interpolation
@@ -768,22 +764,20 @@ def warp(img, homography, shape, mode = 'b', weight = 'b', cylinderical = False)
         size_y, size_x = shape
         transformed_img = np.zeros((size_y, size_x, 3))
         
-        # Finding bounds
-        bound_coord = transform_homography(np.argwhere(np.ones_like(img[:, :, 0])), homography)
-        min_y = np.min(bound_coord[:, 0][bound_coord[:, 0] >= 0]).astype(int)
-        max_y = np.max(bound_coord[:, 0][bound_coord[:, 0] < size_y]).astype(int) + 1
-        min_x = np.min(bound_coord[:, 1][bound_coord[:, 1] >= 0]).astype(int)
-        max_x = np.max(bound_coord[:, 1][bound_coord[:, 1] < size_x]).astype(int) + 1
-
         # Finding all possible coordinates
         transformed_coord = np.argwhere(np.ones_like(transformed_img[:, :, 0]))
         
         # Transforming coordinates
         homography = np.linalg.inv(homography)
         homography /= homography[2,2]
-        coord = transform_homography(transformed_coord, homography)
         if cylinderical:
-            coord = transform_planar(coord, img.shape[1], img.shape[0], 800)
+            r = transformed_img.shape[1]
+            d = r/2
+            transformed_coord_cyl = transform_planar(transformed_coord, transformed_img.shape, r, d)
+            transformed_coord_cyl[:, 1] += center[1]
+        else:
+            transformed_coord_cyl = np.copy(transformed_coord)
+        coord = transform_homography(transformed_coord_cyl, homography)
         filter_ind = (0 <= coord[:, 0]) & (coord[:, 0] < img.shape[0]-1)
         filter_ind &= (0 <= coord[:, 1]) & (coord[:, 1] < img.shape[1]-1)
         coord = coord[filter_ind]
@@ -825,6 +819,7 @@ def warp(img, homography, shape, mode = 'b', weight = 'b', cylinderical = False)
 def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
     '''
     mode = 'l': Linear warp images taking middle image as base
+    mode = 'q': Exponential warp
     '''
     img_arr = np.copy(img_arr)
     
@@ -836,7 +831,10 @@ def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
         # Creating compound homography
         compound_homography = np.stack([np.eye(3) for i in range(num_img)])
         base_img_ind = (num_img-1)//2
-        compound_homography[base_img_ind, 1, 2] += (base_img_ind*img_arr.shape[2]*x_size)//num_img # Centering of base img
+        center_x = (base_img_ind*img_arr.shape[2]*x_size)//num_img
+        center_y = 0
+        compound_homography[base_img_ind, 1, 2] +=  center_x        # Centering of base img in x direction
+        compound_homography[base_img_ind, 0, 2] += center_y         # Centering of base img in y direction
         for i in range(base_img_ind+1, num_img):
             cascade_homography = np.matmul(compound_homography[i-1, :, :], homography_arr[i-1, :, :])
             cascade_homography /= cascade_homography[2, 2]
@@ -849,14 +847,93 @@ def warp_arr(img_arr, homography_arr, mode = 'l', x_size = 5):
         # Applying compound homography
         transformed_shape = (img_arr.shape[1], x_size*img_arr.shape[2])
         for i in range(num_img):
-            transformed_img, ct = warp(img_arr[i, :, :, :], compound_homography[i], transformed_shape)
+            transformed_img, ct = warp(img_arr[i, :, :, :], compound_homography[i], transformed_shape, (center_y, center_x))
             warped_arr.append(transformed_img)
             ct_pt.append(ct)
-                
+    
+    elif mode == 'e':
+        warped_arr = []
+        ct_pt = []
+        num_img = img_arr.shape[0]
+        
+        base_img_ind = (num_img-1)//2
+        
+        for i in range(num_img):
+            transformed_img, ct = warp
+
     else:
         raise Exception("No Valid Mode")
 
     return np.stack(warped_arr), np.stack(ct_pt)
+
+
+# Detect preproces, feature, calculates homography and then warps
+def all(img_arr, save_bool):
+    img_arr = np.copy(img_arr)
+    num_img = img_arr.shape[0]
+    
+    # save
+    preprocessed_img_arr = []
+    feature_detected_img_arr = []
+    matched_img_arr = []
+    
+    # Constants for warping
+    base_img_ind = (num_img-1)//2
+    warped_img_arr = [None for i in range(num_img)]
+    ct_pt = [None for i in range(num_img)]
+    x_size = 5
+    transformed_shape = (2*img_arr.shape[1], x_size*img_arr.shape[2])
+    center_x = (base_img_ind*img_arr.shape[2]*x_size)//num_img
+    center_y = img_arr.shape[1]/2
+    
+    # Base image
+    base_homography = np.eye(3)
+    base_homography[:2, 2] = np.array([center_y, center_x])
+    warped_img_arr[base_img_ind], ct_pt[base_img_ind] = warp(img_arr[base_img_ind], base_homography, transformed_shape, (center_y, center_x))
+    print(f"Image {base_img_ind} done")
+    print()
+    
+    for ind in range(base_img_ind+1, 5):
+        print(f"Image {ind} Processing")
+        img, curr_ctpt = warp(img_arr[ind], np.eye(3), transformed_shape, (center_y, center_x))
+        
+        # Preprocessing
+        preprocessed_arr = preprocess(np.array([warped_img_arr[ind-1], img]))
+        preprocessed_arr[0] = (preprocessed_arr[0].T*ct_pt[ind-1].T).T
+        preprocessed_arr[1] = (preprocessed_arr[1].T*curr_ctpt.T).T
+        if save_bool:
+            preprocessed_img_arr.append(preprocessed_arr[0])
+            preprocessed_img_arr.append(preprocessed_arr[1])
+        print(f"Image {ind} Preprocessed")
+        
+        # Feature Detection
+        feature_detected_arr, keypoint_arr = feature_detector(preprocessed_arr, mode = 'l', save = save_bool)
+        if save_bool:
+            feature_detected_img_arr.append(feature_detected_arr[0])
+            feature_detected_img_arr.append(feature_detected_arr[1])
+        print(f"Image {ind} Feature Detected")
+        
+        # Feature Descriptor
+        descriptor_list, keypoint_index_list = feature_descriptor(preprocessed_arr, keypoint_arr, mode = 's')
+        print(f"Image {ind} Descriptor Created")
+        
+        # Matching Descriptor
+        matched_coord = match_coord(descriptor_list, keypoint_index_list)
+        if save_bool:
+            matched_img = create_match_img(preprocessed_arr, matched_coord)
+            matched_img_arr.append(matched_img[0])
+        print(f"Image {ind} Descriptor Matched")
+        
+        # Computing Homography
+        homography = apply_arr(matched_coord, ransac_homography)
+        print(homography)
+        print(f"Image {ind} Homography Calculated")
+        
+        # Warping
+        warped_img_arr[ind], ct_pt[ind] = warp(img, homography[0], transformed_shape, (center_y, center_x))
+        print(f"Image {ind} Warped")
+        
+    return warped_img_arr[base_img_ind:], ct_pt[base_img_ind:], preprocessed_img_arr, feature_detected_img_arr, matched_img_arr
 
 
 # Equalize global illumination
@@ -950,7 +1027,11 @@ def blend(img_arr, ct_pt, mode = 'g', crop = 2):
             seam_arr = np.array(seam_arr)
             
             # Either right most point of first image or seam value as predicted
-            min_seam = np.argmin(np.concatenate([ct, np.zeros((ct.shape[0],1))], axis=1), axis = 1)
+            # min_seam = np.argmin(np.concatenate([ct, np.zeros((ct.shape[0],1))], axis=1), axis = 1)
+            min_seam = np.zeros_like(seam_arr)
+            for y in range(min_seam.shape[0]):
+                indices = np.argwhere(ct[y])
+                min_seam[y] = indices[-1] if indices.shape[0] > 0 else 0
             seam_arr = np.minimum(min_seam, seam_arr)
             
             # Blending using seam

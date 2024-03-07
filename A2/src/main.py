@@ -51,7 +51,7 @@ if __name__ == "__main__":
     print(f"Input Time Taken:\t\t\t{read_time - start_time}")
     
     # Flag to toggle saving of intermediate images
-    save_bool = True
+    save_bool = False
 
     # Preprocessing of image
     preprocessed_img_arr = helper.preprocess(img_arr)
@@ -83,7 +83,8 @@ if __name__ == "__main__":
     print(f"Homography Time Taken:\t\t\t{homography_time - matching_time}")
     
     # Warping
-    warped_img_arr, ct_pt = helper.warp_arr(img_arr, homography)
+    x_size = num_img if num_img%2 == 1 else num_img-1
+    warped_img_arr, ct_pt = helper.warp_arr(img_arr, homography, x_size=x_size)
     warping_time = time.time()
     print(f"Warping Time Taken:\t\t\t{warping_time - homography_time}")
     
