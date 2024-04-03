@@ -1,16 +1,22 @@
 import os
 import time
 import numpy as np
+import pickle
 import helper
 
 no_box_dataset_addr = "data_no_box"
 cropped_dataset = "data"
 hog_addr = "temp/hog.npz"
 pca_addr = "temp/pca.npz"
+svm_addr = "temp/svm.pkl"
+roc_addr = "roc"
 
 start_time = time.time()
 overwrite = False
 save_bool = True
+
+if save_bool and not os.path.exists('temp'):
+    os.mkdir('temp')
 
 # Creating Dataset
 helper.create_dataset(no_box_dataset_addr, cropped_dataset, overwrite=overwrite)
@@ -68,10 +74,18 @@ hog_arr_val = pca.transform(hog_arr_val)
 print(f"Reduced Descriptor Dimension to {pca.red_dim}\tTime: {time.time()-start_time}")
 
 # Training SVM
-svm = helper.SVM()
-svm.train(hog_arr_train, label_arr_train)
-pred_train = svm.predict(hog_arr_train)
-pred_val = svm.predict(hog_arr_val)
+if overwrite or not os.path.exists(svm_addr):
+    svm = helper.SVM()
+    svm.train(hog_arr_train, label_arr_train)
+    if save_bool:
+        with open(svm_addr, 'wb') as file:
+            pickle.dump(svm, file)
+else:
+    with open(svm_addr, 'rb') as file:
+        svm = pickle.load(file)
+score_train, pred_train = svm.predict(hog_arr_train)
+score_val, pred_val = svm.predict(hog_arr_val)
 
-print("Train Accuracy:", helper.accuracy(label_arr_train, pred_train))
-print("Validation Accuracy:", helper.accuracy(label_arr_val, pred_val))
+print("Train:", helper.metric(label_arr_train, pred_train))
+print("Validation:", helper.metric(label_arr_val, pred_val))
+print("ROCAUC:", helper.roc(score_val, label_arr_val, roc_addr))

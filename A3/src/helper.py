@@ -3,6 +3,8 @@ import shutil
 import cv2
 import mediapipe as mp
 import numpy as np
+import matplotlib.pyplot as plt
+import sklearn.svm, sklearn.metrics
 
 # Dataset
 class Dataset():
@@ -190,18 +192,40 @@ class PCA():
 # SVM
 class SVM():
     def __init__(self):
-        self.svm = cv2.ml.SVM.create()
-        self.svm.setKernel(cv2.ml.SVM_LINEAR)
-        self.svm.setType(cv2.ml.SVM_C_SVC)
+        self.svm = sklearn.svm.SVC(probability=True)
 
     def train(self, data, labels):
-        data = data.astype(np.float32)
-        self.svm.train(data, cv2.ml.ROW_SAMPLE, labels)
+        self.svm.fit(data, labels)
     
     def predict(self, data):
-        data = data.astype(np.float32)
-        return self.svm.predict(data)[1].reshape(-1)
+        return self.svm.predict_proba(data)[:, 1], self.svm.predict(data)
     
-# Calculating Accuracy
-def accuracy(y_orig, y_pred):
-    return np.count_nonzero(y_orig == y_pred)/y_orig.shape[0]
+# Calculating Metrics
+def metric(y_orig, y_pred):
+    metric = {}
+    tp0 = np.count_nonzero((y_orig==0) & (y_pred==0))
+    tp1 = np.count_nonzero((y_orig==1) & (y_pred==1))
+    fp0 = np.count_nonzero((y_orig==1) & (y_pred==0))
+    fp1 = np.count_nonzero((y_orig==0) & (y_pred==1))
+    metric['precision'] = (tp0/(tp0+fp0) + tp1/(tp1+fp1))/2
+    metric['recall'] = (tp0/(tp0+fp1) + tp1/(tp1+fp0))/2
+    metric['f1'] = (2*tp0/(2*tp0+fp0+fp1) + 2*tp1/(2*tp1+fp0+fp1))/2
+    metric['acc'] = (tp0+tp1)/(tp0+tp1+fp0+fp1)
+    return metric
+
+# Create ROC curve
+def roc(score, label, address):
+    fpr, tpr, _ = sklearn.metrics.roc_curve(label, score)
+    roc_auc = sklearn.metrics.auc(fpr, tpr)
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC) Curve')
+    plt.legend(loc="lower right")
+    plt.savefig(address)
+
+    return roc_auc
