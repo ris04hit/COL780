@@ -1,6 +1,7 @@
 *__pycache__
 .vscode
 *.zip
+myenv/
 
 # A1
 A1/temp
@@ -12,3 +13,7 @@ A1/val_data
 A2/temp
 A2/_order.txt
 A2/report.pdf
+
+# A3
+A3/data*
+A3/temp
